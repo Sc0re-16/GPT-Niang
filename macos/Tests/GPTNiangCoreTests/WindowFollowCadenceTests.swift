@@ -2,6 +2,13 @@ import XCTest
 @testable import GPTNiangCore
 
 final class WindowFollowCadenceTests: XCTestCase {
+    func testPanelBehindHostIsRecoveredWithoutRaisingAboveOtherApps() {
+        XCTAssertTrue(WindowFollowOrdering.needsOrdering(frontToBack: [90, 10, 20], host: 10, panel: 20))
+        XCTAssertFalse(WindowFollowOrdering.needsOrdering(frontToBack: [90, 20, 10], host: 10, panel: 20))
+        XCTAssertTrue(WindowFollowOrdering.needsOrdering(frontToBack: [90, 10], host: 10, panel: 20))
+        XCTAssertFalse(WindowFollowOrdering.needsOrdering(frontToBack: [90, 20], host: 10, panel: 20))
+    }
+
     func testFastPositionTicksDoNotRepeatFullDiscovery() {
         var cadence = WindowFollowCadence()
         XCTAssertTrue(cadence.discover(now: 0))

@@ -28,3 +28,13 @@ public struct WindowFollowCadence {
         return true
     }
 }
+
+// isVisible stays true when a panel slips behind its host (for example after
+// switching Spaces or closing settings). Repair that ordering on discovery.
+public enum WindowFollowOrdering {
+    public static func needsOrdering(frontToBack: [Int], host: Int, panel: Int) -> Bool {
+        guard let hostIndex = frontToBack.firstIndex(of: host) else { return false }
+        guard let panelIndex = frontToBack.firstIndex(of: panel) else { return true }
+        return panelIndex > hostIndex
+    }
+}

@@ -33,10 +33,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var hostRect: CGRect?
     private var lastHostNumber: Int?
     private var selectedHostNumber: Int?
+    private var hostNeedsOrdering = false
+    private var desktopNeedsOrdering = false
     private var hostApplication: NSRunningApplication?
     private var cadence = WindowFollowCadence()
     private var wasCodexFrontmost = false
-    private var missingHostSince: Date?
+    private var missingHostSince: TimeInterval?
     private var dragOrigin: CGPoint?
     private var previousFollow: Bool?
     private var dragEvents = 0
@@ -82,6 +84,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         languageSubscription = model.$language.dropFirst().sink { [weak self] _ in
             Task { @MainActor in self?.buildMenu(); self?.localizeWindowTitles() }
         }
+        for name in [NSWorkspace.activeSpaceDidChangeNotification, NSWorkspace.didWakeNotification] {
+            NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(restoreWindowOrdering), name: name, object: nil)
+        }
+        NotificationCenter.default.addObserver(self, selector: #selector(restoreWindowOrdering),
+            name: NSApplication.didChangeScreenParametersNotification, object: nil)
         model.start()
         updateWindow()
         let followTimer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
@@ -97,7 +104,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
         logger.info("macOS widget launched")
     }
+    @objc private func restoreWindowOrdering() {
+        hostNeedsOrdering = true; desktopNeedsOrdering = true
+    }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        restoreWindowOrdering(); updateWindow(); return true
+    }
     func applicationWillTerminate(_ notification: Notification) {
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        NotificationCenter.default.removeObserver(self)
         timer?.invalidate(); updater?.stop(); model?.stop(); speedStore.stop()
         if lockDescriptor >= 0 { Darwin.close(lockDescriptor) }
     }
@@ -199,6 +214,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             // A full list is front-to-back: choose the current foremost Codex
             // window rather than retaining an older, still-visible window.
             selectedHostNumber = number
+            if discover {
+                let orderedNumbers = windows.compactMap { $0[kCGWindowNumber as String] as? Int }
+                hostNeedsOrdering = WindowFollowOrdering.needsOrdering(
+                    frontToBack: orderedNumbers, host: number, panel: panel.windowNumber)
+            }
             return (frame, number)
         }
         selectedHostNumber = nil
@@ -231,14 +251,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 if abs(model.displayScale - fitted) > 0.001 { model.displayScale = fitted }
                 size = CGSize(width: 378 * fitted, height: 378 * fitted)
                 if dragOrigin == nil { let frame = WidgetPlacement.frame(host: rect, visibleScreen: screen.visibleFrame, size: size, x: model.x, y: model.y); if panel.frame != frame { panel.setFrame(frame, display: true) } }
-                if !panel.isVisible || lastHostNumber != number || (codexFrontmost && !wasCodexFrontmost) {
+                if !panel.isVisible || lastHostNumber != number || hostNeedsOrdering || (codexFrontmost && !wasCodexFrontmost) {
                     panel.order(.above, relativeTo: number)
+                    hostNeedsOrdering = false
                 }
                 visible = true; lastHostNumber = number; if model.trackingNote != nil { model.trackingNote = nil }
             } else {
-                if missingHostSince == nil { missingHostSince = Date() }
+                if missingHostSince == nil { missingHostSince = now }
                 let appHidden = hostApplication?.isHidden ?? true
-                if !appHidden && Date().timeIntervalSince(missingHostSince!) < 0.75 {
+                if !appHidden && now - missingHostSince! < 0.75 {
                     visible = panel.isVisible
                 } else {
                     if panel.isVisible { panel.orderOut(nil) }; lastHostNumber = nil; hostRect = nil
@@ -265,7 +286,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                     origin: CGPoint(x: model.desktopLeft ?? defaultFrame.minX, y: model.desktopBottom ?? defaultFrame.minY))
                 if panel.frame != frame { panel.setFrame(frame, display: true) }
             }
-            if !panel.isVisible || levelChanged { panel.orderFrontRegardless() }; visible = true; hostRect = area
+            if !panel.isVisible || levelChanged || desktopNeedsOrdering {
+                panel.orderFrontRegardless(); desktopNeedsOrdering = false
+            }
+            visible = true; hostRect = area
         }
         if let area = hostRect {
             let left = panel.frame.midX < area.midX
