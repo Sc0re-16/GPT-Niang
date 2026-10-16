@@ -38,3 +38,12 @@ public enum WindowFollowOrdering {
         return panelIndex > hostIndex
     }
 }
+
+// Only an unavailable WindowServer reply gets a short anti-flicker grace.
+// A successful snapshot showing no eligible host (minimized/closed/off-Space)
+// is authoritative and must not leave the pet floating after its host is gone.
+public enum WindowFollowVisibility {
+    public static func keepDuringMissingHost(appHidden: Bool, confirmedMissing: Bool, missingFor: TimeInterval) -> Bool {
+        !appHidden && !confirmedMissing && missingFor >= 0 && missingFor < 0.75
+    }
+}

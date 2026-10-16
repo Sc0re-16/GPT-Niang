@@ -36,4 +36,13 @@ final class WindowFollowCadenceTests: XCTestCase {
         XCTAssertTrue(cadence.diagnostics(now: 0.25))
         XCTAssertFalse(cadence.presence(now: 0.25, visible: true))
     }
+    func testMinimizedOrClosedHostDoesNotReceiveTransientMetadataGrace() {
+        XCTAssertFalse(WindowFollowVisibility.keepDuringMissingHost(appHidden: false, confirmedMissing: true, missingFor: 0))
+        XCTAssertFalse(WindowFollowVisibility.keepDuringMissingHost(appHidden: true, confirmedMissing: false, missingFor: 0))
+        XCTAssertTrue(WindowFollowVisibility.keepDuringMissingHost(appHidden: false, confirmedMissing: false, missingFor: 0))
+        XCTAssertTrue(WindowFollowVisibility.keepDuringMissingHost(appHidden: false, confirmedMissing: false, missingFor: 0.74))
+        XCTAssertFalse(WindowFollowVisibility.keepDuringMissingHost(appHidden: false, confirmedMissing: false, missingFor: 0.75))
+        XCTAssertFalse(WindowFollowVisibility.keepDuringMissingHost(appHidden: false, confirmedMissing: false, missingFor: -1))
+    }
+
 }
