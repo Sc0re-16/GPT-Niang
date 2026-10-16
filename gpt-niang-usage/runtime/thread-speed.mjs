@@ -79,12 +79,15 @@ export function allowedRollout(file, codexHome) {
     }) ? real : null;
   } catch { return null; }
 }
-export function readRecentThreads(codexHome) {
+export function readRecentThreads(codexHome, {userFacingOnly = false} = {}) {
   const databases = fs.readdirSync(codexHome).filter(name => /^state_\d+\.sqlite$/.test(name))
     .sort((a, b) => Number(b.match(/\d+/)[0]) - Number(a.match(/\d+/)[0]));
   if (!databases.length) throw new Error('目前沒有可讀取的本機聊天索引');
   const result = spawnSync('/usr/bin/sqlite3', ['-readonly', '-json', path.join(codexHome, databases[0]),
-    'SELECT id,title,rollout_path FROM threads WHERE archived=0 ORDER BY updated_at DESC LIMIT 12;'],
+    // Filter before LIMIT so internal review/agent sessions cannot crowd out chats.
+    userFacingOnly
+      ? "SELECT id,title,rollout_path,source FROM threads WHERE archived=0 AND source IN ('cli','vscode') ORDER BY updated_at DESC LIMIT 12;"
+      : 'SELECT id,title,rollout_path FROM threads WHERE archived=0 ORDER BY updated_at DESC LIMIT 12;'],
     {encoding: 'utf8', timeout: 2000, maxBuffer: 256 * 1024});
   if (result.status !== 0) throw new Error('本機聊天索引暫時無法讀取');
   const rows = JSON.parse(result.stdout || '[]');

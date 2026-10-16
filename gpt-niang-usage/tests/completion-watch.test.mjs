@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {CompletionEvents, CompletionMonitor} from '../runtime/completion-watch.mjs';
-import {RolloutCounters} from '../runtime/thread-speed.mjs';
+import {RolloutCounters, readRecentThreads} from '../runtime/thread-speed.mjs';
 import {quotaPresenceActive} from '../runtime/worker-state.mjs';
 const event=(type,at=1000,turn_id='turn1')=>({type:'event_msg',timestamp:new Date(at).toISOString(),payload:{type,turn_id,privateText:'never emit'}});
 
@@ -34,10 +34,33 @@ function fixture(t){
   t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
   fs.mkdirSync(path.join(home,'sessions'));fs.mkdirSync(path.join(home,'archived_sessions'));
   const file=path.join(home,'sessions','a.jsonl');fs.writeFileSync(file,'');
-  const row={id:'a',rollout_path:file};
+  const row={id:'a',rollout_path:file,source:'vscode'};
   const append=(...records)=>fs.appendFileSync(file,records.map(r=>JSON.stringify(r)+'\n').join(''));
   return {home,file,row,append};
 }
+test('guardian and delegated agent completions never announce that the user reply ended',t=>{
+  const {home,row,append}=fixture(t);
+  const monitor=new CompletionMonitor(home,0);monitor.update([]);
+  append(event('task_started'),event('task_complete',2000));
+  for(const source of [JSON.stringify({subagent:{other:'guardian'}}),
+    JSON.stringify({subagent:{thread_spawn:{parent_thread_id:'parent'}}}), 'unknown', undefined]) {
+    assert.deepEqual(monitor.update([{...row,source}]),[]);
+  }
+  assert.equal(monitor.update([row]).length,1);
+  assert.deepEqual(monitor.update([row]),[]);
+});
+test('internal sessions are excluded before the recent-chat limit',async t=>{
+  const {spawnSync}=await import('node:child_process');
+  const {home,file}=fixture(t);
+  const guardian=JSON.stringify({subagent:{other:'guardian'}});
+  const sql='CREATE TABLE threads(id TEXT,title TEXT,rollout_path TEXT,archived INTEGER,updated_at INTEGER,source TEXT);'+
+    `INSERT INTO threads VALUES('chat','private','${file}',0,1,'vscode');`+
+    Array.from({length:15},(_,i)=>`INSERT INTO threads VALUES('guard${i}','private','${file}',0,${i+2},'${guardian}');`).join('');
+  const result=spawnSync('/usr/bin/sqlite3',[path.join(home,'state_1.sqlite'),sql],{encoding:'utf8'});
+  assert.equal(result.status,0,result.stderr);
+  assert.equal(readRecentThreads(home).length,12);
+  assert.deepEqual(readRecentThreads(home,{userFacingOnly:true}).map(r=>r.id),['chat']);
+});
 test('baseline skips historical records; same-poll start/complete and partial lines work exactly once',t=>{
   const {home,file,row,append}=fixture(t);
   append(event('task_started'),event('task_complete',2000));
@@ -59,7 +82,7 @@ test('new sessions created after enabling are observed, older starts are ignored
   const second=path.join(home,'sessions','b.jsonl');
   fs.writeFileSync(second,JSON.stringify(event('task_started',12000))+'\n'+JSON.stringify(event('task_complete',13000))+'\n');
   append(event('task_started',12000,'two'),event('task_complete',13000,'two'));
-  const events=monitor.update([row,{id:'b',rollout_path:second}]);assert.equal(events.length,2);
+  const events=monitor.update([row,{id:'b',rollout_path:second,source:'cli'}]);assert.equal(events.length,2);
   assert.equal(JSON.stringify(events).includes('privateText'),false);
   assert.equal(JSON.stringify(events).includes(file),false);
 });
@@ -78,9 +101,9 @@ test('partial historical lines, outside paths and symlink escapes cannot become 
   const monitor=new CompletionMonitor(home,0);monitor.update([row]);
   fs.appendFileSync(file,started.slice(30)+'\n'+JSON.stringify(event('task_complete',2000))+'\n');
   assert.deepEqual(monitor.update([row]),[]);
-  assert.deepEqual(monitor.update([{id:'bad',rollout_path:path.join(home,'outside.jsonl')}]),[]);
+  assert.deepEqual(monitor.update([{id:'bad',source:'vscode',rollout_path:path.join(home,'outside.jsonl')}]),[]);
   const link=path.join(home,'sessions','escape.jsonl');fs.symlinkSync(path.join(home,'outside.jsonl'),link);
-  assert.deepEqual(monitor.update([{id:'bad',rollout_path:link}]),[]);
+  assert.deepEqual(monitor.update([{id:'bad',source:'vscode',rollout_path:link}]),[]);
 });
 test('hidden macOS quota alerts require explicit opt-in and a fresh live heartbeat; Windows stays unchanged',()=>{
   const p={visible:false,backgroundQuota:true,at:1000,pid:123},alive=pid=>pid===123;
@@ -99,8 +122,8 @@ test('the real helper reads a read-only SQLite fixture, emits new completions an
   const {fileURLToPath}=await import('node:url');
   const {home,file,append}=fixture(t);
   const sql=spawnSync('/usr/bin/sqlite3',[path.join(home,'state_1.sqlite'),
-    'CREATE TABLE threads(id TEXT,title TEXT,rollout_path TEXT,archived INTEGER,updated_at INTEGER);'+
-    `INSERT INTO threads VALUES('a','private title','${file.replaceAll("'","''")}',0,1);`],{encoding:'utf8'});
+    'CREATE TABLE threads(id TEXT,title TEXT,rollout_path TEXT,archived INTEGER,updated_at INTEGER,source TEXT);'+
+    `INSERT INTO threads VALUES('a','private title','${file.replaceAll("'","''")}',0,1,'vscode');`],{encoding:'utf8'});
   assert.equal(sql.status,0,sql.stderr);
   const child=spawn(process.execPath,[fileURLToPath(new URL('../runtime/completion-watch.mjs',import.meta.url))],
     {env:{...process.env,CODEX_HOME:home},stdio:['pipe','pipe','pipe']});

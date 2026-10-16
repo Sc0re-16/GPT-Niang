@@ -28,6 +28,9 @@ export class CompletionMonitor {
   update(rows) {
     const active = new Set(), events = [];
     for (const row of rows.slice(0, 12)) {
+      // Internal guardian/subagent turns also emit task_complete, but do not
+      // finish a user conversation. Accept only explicit interactive sources.
+      if (!['cli', 'vscode'].includes(row.source)) continue;
       if (typeof row.id !== 'string' || row.id.length > 200) continue;
       const file = allowedRollout(row.rollout_path, this.home);
       if (!file) continue;
@@ -56,7 +59,7 @@ function run() {
   const monitor = new CompletionMonitor(home);
   const send = value => process.stdout.write(JSON.stringify(value) + '\n');
   const update = () => {
-    try { const rows = readRecentThreads(home); send({events: monitor.update(rows), sessionCount: rows.length, error: null}); }
+    try { const rows = readRecentThreads(home, {userFacingOnly: true}); send({events: monitor.update(rows), sessionCount: rows.length, error: null}); }
     catch { send({events: [], sessionCount: 0, error: 'LOCAL_INDEX_UNAVAILABLE'}); }
   };
   update(); const timer = setInterval(update, 3000);

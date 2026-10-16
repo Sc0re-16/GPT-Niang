@@ -231,7 +231,10 @@ upstream automatic update can replace local feature changes.
 **后台短暂显示桌宠（仅跟随模式）** is independent of the sound switch. Its new
 `completionPopupEnabled` preference defaults off when upgrading older settings;
 all existing toggles and thresholds decode with their previous values intact.
-The completion monitor remains the master switch. Enabling the popup does not
+Completion alerts only observe interactive Codex desktop/CLI sessions (`vscode`/`cli`).
+Internal guardian reviews, delegated agents and unknown session sources are excluded
+before the recent-session limit, so their task completions cannot announce that
+a user reply has ended. The completion monitor remains the master switch. Enabling the popup does not
 enable sound or change the desktop-mode preference.
 
 In following mode, if the host is in the background or the main pet is hidden,
