@@ -27,7 +27,7 @@ import GPTNiangCore
         precondition([model.desktopLeft, model.desktopBottom, model.x, model.y] == prefs && model.followCodex)
         let samePanel = panel.windowNumber
         RunLoop.main.run(until: Date().addingTimeInterval(1))
-        precondition(controller.present(count: 2, model: model))
+        precondition(controller.present(counts: [.command: 1, .question: 1], model: model))
         precondition(controller.count == 3 && controller.panel?.windowNumber == samePanel)
         // Render only our own view to a file for visual QA; no screen capture.
         if let view = panel.contentView {

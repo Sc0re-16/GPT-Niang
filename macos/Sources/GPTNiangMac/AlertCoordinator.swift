@@ -1,14 +1,14 @@
 import AppKit
 import GPTNiangCore
 
-private struct CompletionEvent: Decodable { let threadId: String; let eventId: String; let at: Double }
-private struct CompletionResponse: Decodable { let events: [CompletionEvent]; let sessionCount: Int?; let error: String? }
+private struct CompletionEvent: Decodable { let threadId: String; let eventId: String; let at: Double; let kind: String? }
+private struct CompletionResponse: Decodable { let events: [CompletionEvent]; let sessionCount: Int?; let error: String?; let notificationLogAvailable: Bool? }
 
 @MainActor
 final class AlertCoordinator {
     private weak var model: WidgetModel?
     private let notifications: AlertNotifications
-    private let playSound: () -> Void
+    private let playSound: (AlertSound) -> Void
     private var lastSoundAt = -Double.infinity
     private(set) var soundSignals = 0
     private var state = QuotaAlertState()
@@ -31,31 +31,33 @@ final class AlertCoordinator {
     private(set) var completionEvents = 0
     var monitorRunning: Bool { process?.isRunning == true }
     var hostFrontmost = false
-    var presentCompletionPopup: ((Int) -> Bool)?
+    var presentCompletionPopup: (([TaskAlertKind: Int]) -> Bool)?
     var dismissCompletionPopup: (() -> Void)?
     private(set) var popupPresentations = 0
+    private(set) var requestEvents = 0
+    private(set) var notificationLogAvailable = false
     var windowVisible = false
     var windowBusy = false
     private var stateURL: URL { model!.dataDirectory.appendingPathComponent("alert-state.json") }
 
-    init(model: WidgetModel, notifications: AlertNotifications? = nil, playSound: (() -> Void)? = nil) {
+    init(model: WidgetModel, notifications: AlertNotifications? = nil, playSound: ((AlertSound) -> Void)? = nil) {
         self.model = model
-        self.playSound = playSound ?? { [weak model] in model?.playAlertSound() }
+        self.playSound = playSound ?? { [weak model] tone in model?.playAlertSound(tone) }
         self.notifications = notifications ?? SystemAlertNotifications()
         if let data = try? Data(contentsOf: stateURL), let saved = try? JSONDecoder().decode(QuotaAlertState.self, from: data) { state = saved }
     }
     func configure() {
         guard let model else { return }
         queue.clear()
-        if !model.alertPreferences.completionEnabled || !model.alertPreferences.completionPopupEnabled || !model.followCodex {
+        if !model.alertPreferences.anyTaskPopup || !model.followCodex {
             dismissCompletionPopup?()
         }
         model.alertPreferences.validate()
         let enabled = model.alertPreferences.quotaEnabled
         if enabled && !quotaWasEnabled { authorizationResolved = false; refreshAuthorization(request: true) }
         quotaWasEnabled = enabled
-        if !model.alertPreferences.completionEnabled { stopMonitor(); model.alertMonitorError = nil }
-        if !enabled && !model.alertPreferences.completionEnabled { queue.clear() }
+        if !model.alertPreferences.taskEnabled { stopMonitor(); model.alertMonitorError = nil }
+        if !enabled && !model.alertPreferences.taskEnabled { queue.clear() }
         // Update a heartbeat immediately so hidden-window quota monitoring can
         // start/stop without creating another worker or a refresh race.
         model.writePresence(visible: windowVisible)
@@ -106,7 +108,7 @@ final class AlertCoordinator {
                 } catch { model.alertStorageError = model.text("提醒记录无法保存，请检查数据目录权限。") }
             }
         }
-        if model.alertPreferences.completionEnabled && process?.isRunning != true && ProcessInfo.processInfo.systemUptime >= nextRestart { startMonitor() }
+        if model.alertPreferences.taskEnabled && process?.isRunning != true && ProcessInfo.processInfo.systemUptime >= nextRestart { startMonitor() }
         if let text = queue.take(now: now, visible: windowVisible,
                                  busy: windowBusy || model.interactionActive || model.bubble) {
             model.showAlert(text)
@@ -116,13 +118,13 @@ final class AlertCoordinator {
         queue.append(text, now: now)
         signalSound()
     }
-    private func signalSound() {
+    private func signalSound(enabled: Bool? = nil, tone: AlertSound? = nil) {
         // Audio belongs to receipt, not bubble visibility. Coalesce simultaneous
         // quota/completion signals so a batch does not play overlapping sounds.
-        guard let model, model.alertPreferences.soundEnabled, model.volume > 0 else { return }
+        guard let model, enabled ?? model.alertPreferences.soundEnabled, model.volume > 0 else { return }
         let uptime = ProcessInfo.processInfo.systemUptime
         guard uptime - lastSoundAt >= 1 else { return }
-        lastSoundAt = uptime; soundSignals += 1; playSound()
+        lastSoundAt = uptime; soundSignals += 1; playSound(tone ?? model.alertPreferences.quotaTone)
     }
     private func notify(_ text: String) {
         guard authorized else { return }
@@ -137,6 +139,11 @@ final class AlertCoordinator {
         enqueue(text, now: Date())
         refreshAuthorization(request: true) { [weak self] in self?.notify(text) }
         tick()
+    }
+    func testTask(_ kind: TaskAlertKind) {
+        let event: [String: Any] = ["threadId": "test", "eventId": UUID().uuidString,
+                                   "kind": kind.rawValue, "at": Date().timeIntervalSince1970 * 1000]
+        if let data = try? JSONSerialization.data(withJSONObject: ["events": [event]]) { consume(data + Data([10])); tick() }
     }
     func openNotificationSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") { NSWorkspace.shared.open(url) }
@@ -175,33 +182,45 @@ final class AlertCoordinator {
         }
     }
     func consume(_ data: Data) {
-        guard let model, model.alertPreferences.completionEnabled else { return }
+        guard let model, model.alertPreferences.taskEnabled else { return }
         pending.append(data)
         guard pending.count <= 512 * 1024 else { pending.removeAll(); return }
         while let end = pending.firstIndex(of: 10) {
             let line = Data(pending[..<end]); pending.removeSubrange(...end)
             guard let response = try? JSONDecoder().decode(CompletionResponse.self, from: line) else { continue }
             completionSessions = response.sessionCount ?? 0
-            completionFrames += 1; completionEvents += response.events.count
+            completionFrames += 1
+            if let available = response.notificationLogAvailable { notificationLogAvailable = available }
             model.alertMonitorError = response.error == nil ? nil : model.text("本机会话索引暂时无法读取，将自动重试。")
             let now = Date(), milliseconds = now.timeIntervalSince1970 * 1000
             let fresh = response.events.filter { event in
                 guard event.eventId.count <= 500, event.at.isFinite,
-                      milliseconds - event.at >= -5000, milliseconds - event.at <= 30000 else { return false }
+                      milliseconds - event.at >= -5000, milliseconds - event.at <= 60000 else { return false }
                 return seen.insert(event.eventId).inserted
             }
-            if seen.count > 256 { seen = Set(fresh.map(\.eventId)) }
-            if !fresh.isEmpty {
-                let text = fresh.count == 1 ? model.text("Codex 本轮回复已结束") : model.text("Codex 有 %@ 轮回复已结束", String(fresh.count))
-                signalSound()
-                let usePopup = CompletionPresentation.shouldPopup(preferences: model.alertPreferences,
-                    followCodex: model.followCodex, hostFrontmost: hostFrontmost, mainVisible: windowVisible)
-                if usePopup, presentCompletionPopup?(fresh.count) == true {
-                    popupPresentations += 1
-                } else {
-                    queue.append(text, now: now)
-                }
+            if seen.count > 4096 { seen = Set(fresh.map(\.eventId)) }
+            var counts: [TaskAlertKind: Int] = [:]
+            for event in fresh {
+                guard let kind = TaskAlertKind(rawValue: event.kind ?? "completion"),
+                      model.alertPreferences.enabled(for: kind) else { continue }
+                counts[kind, default: 0] += 1
+                if kind == .completion { completionEvents += 1 } else { requestEvents += 1 }
             }
+            if let audible = TaskAlertKind.allCases.first(where: { counts[$0] != nil && model.alertPreferences.sound(for: $0) }) {
+                signalSound(enabled: true, tone: model.alertPreferences.tone(for: audible))
+            }
+            let background = model.followCodex && (!hostFrontmost || !windowVisible)
+            let popupCounts = counts.filter { background && model.alertPreferences.popup(for: $0.key) }
+            let shown = !popupCounts.isEmpty && presentCompletionPopup?(popupCounts) == true
+            if shown { popupPresentations += 1 }
+            let queued = counts.filter { !(shown && popupCounts[$0.key] != nil) }
+            for kind in TaskAlertKind.allCases where queued[kind] != nil {
+                // A pending action may already be answered when the user returns.
+                // Do not queue background request reminders for later replay.
+                if kind != .completion && kind != .generic && (!windowVisible || windowBusy || model.interactionActive || model.bubble) { continue }
+                queue.append(model.taskAlertText([kind: queued[kind]!]), now: now)
+            }
+
         }
     }
     private func stopMonitor() {

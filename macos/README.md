@@ -123,9 +123,34 @@ Local preferences/quota snapshots live at:
 
 For 1.3.3+, use the native update controls described below. For a first upgrade from older versions, quit GPT 娘 and replace the app in its original location; preferences and custom quotes remain in the data directory above. To move the app, disable login launch first, quit, move it, and enable login launch again from the new location if needed.
 
-Choosing **退出 GPT 娘** quits the Mac application and helpers. Reopening Codex alone does not relaunch GPT 娘; open the `.app` again. Login launch is optional, unlike the Windows installer’s default startup configuration.
+Choosing **退出 GPT 娘** quits the pet and its quota/completion helpers. With
+application linking disabled, reopening the host does not relaunch the pet.
+With **随当前应用启动与退出** enabled, the lightweight lifecycle agent remains
+available: the host's next launch reopens the pet, and its final process exit
+closes the pet gracefully. Manually quitting the pet while the host stays open
+is respected until the host next starts. Closing windows, minimizing, switching
+chats or changing the foreground application does not trigger lifecycle actions.
 
-To uninstall, disable login launch, quit, and remove the app. Remove the data directory separately only if you want to discard preferences and snapshots. Do not delete Codex’s own login or session data.
+The link targets the entire desktop app by bundle identifier (default
+`com.openai.codex`, including installations named `ChatGPT.app`), independently
+of what is open inside it. It does not observe ChatGPT chat content. The setting
+is off for existing installations until enabled, and leaves position, audio,
+alert preferences and the separate login-launch setting intact. Login launch
+may still independently open the pet when logging into the Mac; disable that
+separate option if the pet should only start with the host.
+
+The bundled `GPTNiangHostLink` LaunchAgent uses `SMAppService` on macOS 13+.
+It observes workspace events and checks running host process IDs once per second
+as a fallback. Tracking process IDs also detects rapid restarts without requiring
+a poll in between. It never uses chat completion events for application lifetime.
+Enable linking after moving the app to its permanent location. If approval is
+required, allow GPT 娘 background activity under System Settings → General →
+Login Items & Extensions. The settings view provides a shortcut. Disabling the
+link unregisters its agent; the pet then continues to work independently.
+Disable linking before moving or uninstalling the application. No host settings,
+credentials or chat files are modified. Login launch remains optional.
+
+To uninstall, disable application linking and login launch, quit, and remove the app. Remove the data directory separately only if you want to discard preferences and snapshots. Do not delete Codex’s own login or session data.
 
 ## Verification
 
@@ -169,8 +194,9 @@ Business `individualLimit` windows with null minutes decode alongside timed wind
 
 This source build adds **额度与完成提醒** to native Settings. Both quota switches,
 completion bubbles, background completion popups, and alert sounds default off; existing preferences and quotes
-are preserved. The feature monitors **Codex**, not ordinary ChatGPT conversations.
-Use ChatGPT's own Settings → Notifications for ChatGPT completion notifications.
+are preserved. Quota data and local session monitoring come from **Codex**.
+ChatGPT-kind task reminders depend on the host notification-log adapter described
+below; they do not have universal conversation coverage.
 
 - Short-window and weekly quota switches each have an independent integer
   remaining-percentage threshold (1–99%, initially 20%). Short means the shortest
@@ -191,24 +217,40 @@ Use ChatGPT's own Settings → Notifications for ChatGPT completion notification
   notification settings. Permission state refreshes on app activation and every
   minute while quota alerts are enabled. System notification delivery is subject
   to macOS notification and Focus settings.
-- Completion monitoring has a separate helper, independent of the speed window,
-  reading the newest twelve local unarchived Codex sessions every three seconds.
-  Only a start followed by an explicit matching `task_complete` creates an alert.
-  Cancellations, errors, token counters and inactivity do not mean completion.
-  Existing history is skipped; new sessions are read with an enable-time cutoff.
-  A turn begun before monitoring was enabled is not announced. No cloud or ordinary
-  ChatGPT sessions are monitored. Local session formats may change: index failures
-  show a status and retry, never guessed completions.
-- Completion events contain only thread/event identifiers and timestamps, never
-  titles or conversation text. The speed-panel protocol keeps its existing
-  fields; a cancelled turn is now labeled `cancelled` rather than completed.
-- Completion alerts are bubbles only, leaving system completion notifications to
-  Codex. User gestures, menus and an existing bubble defer new bubbles; up to four
-  unique messages merge. The main hidden window is not raised. Each pending message
-  expires after two minutes. Optional local audio uses the current volume and is
-  played on event receipt even when the pet is hidden or busy, independently of
-  the click-sound switch. Revealing a queued bubble does not replay audio; signals
-  within one second coalesce to avoid overlapping sounds.
+- Task reminders have independent enabled, sound and background-popup switches for
+  command/permission requests, questions, and turn completion. The completion
+  choices migrate unchanged. Request categories inherit the old completion
+  opt-in, sound and popup choices once; subsequent changes are independent.
+  Other permissions use a neutral authorization message, not a command label.
+- The helper incrementally reads the host's native notification-delivery log,
+  classifying its `permission`, `question`, and `turn-complete` entries, with
+  a neutral fallback for other actual native notification requests.
+  Renderer/forwarder duplicates, generic agent messages and conversation refresh
+  events are ignored. No titles, command text or chat bodies are emitted or saved.
+  Notification identifiers are hashed; completion identity matches the local
+  Codex fallback to prevent duplicate sounds/popups.
+- This is a compatibility adapter for the currently installed host log format,
+  not a public notification-subscription API. It needs the host to actually emit
+  the corresponding notification. Disabled/suppressed host notifications, quiet
+  turns, changed log formats, or inaccessible logs can prevent delivery. It does
+  not read macOS Notification Center or alter host configuration. ChatGPT-kind
+  coverage is conditional on that same notification path; the previously reported
+  DSH conversation has no observed matching notification. The 2026-10-23
+  ChatGPT question test did not produce a received question event; this path
+  has not passed end-to-end acceptance. Completion counters alone cannot prove
+  coverage for every ChatGPT conversation. A native turn-complete notification
+  reports that a turn ended, and does not establish successful task execution.
+- Local Codex completion detection remains a fallback for the latest twelve
+  interactive sessions. It requires a start then a matching successful explicit
+  completion; cancelled, failed, historical and internal-agent turns are ignored.
+  Both inputs react to filesystem changes with a 30-second reconciliation fallback
+  instead of a fixed three-second scan. Startup baselines skip existing content.
+- Completion bubbles may queue for two minutes while hidden/busy. Requests are
+  not queued while hidden/busy, to avoid replaying a request after it was answered.
+  Background popups remain nonactivating, mouse-transparent and six seconds long.
+  Concurrent categories share one panel with separate lines. Audio is emitted on
+  receipt, uses current volume and coalesces within one second. No extra system
+  task notifications are sent; quota notifications keep their previous behavior.
 
 Developer verification:
 
@@ -231,10 +273,10 @@ upstream automatic update can replace local feature changes.
 **后台短暂显示桌宠（仅跟随模式）** is independent of the sound switch. Its new
 `completionPopupEnabled` preference defaults off when upgrading older settings;
 all existing toggles and thresholds decode with their previous values intact.
-Completion alerts only observe interactive Codex desktop/CLI sessions (`vscode`/`cli`).
+The local completion fallback only observes interactive Codex desktop/CLI sessions (`vscode`/`cli`).
 Internal guardian reviews, delegated agents and unknown session sources are excluded
 before the recent-session limit, so their task completions cannot announce that
-a user reply has ended. The completion monitor remains the master switch. Enabling the popup does not
+a user reply has ended. Each task category has its own enabled switch. Enabling its popup does not
 enable sound or change the desktop-mode preference.
 
 In following mode, if the host is in the background or the main pet is hidden,
@@ -249,7 +291,7 @@ Sound is emitted independently on receipt; silent-popup and audio-only operation
 both work. A popup-presented completion is not queued again for the main bubble
 or a second sound on return. In desktop mode, or with the main host foreground
 and the main pet visible, completions keep the original main-bubble behavior.
-Disabling completion/popup, switching to desktop mode, or returning to a visible
+Disabling all task popups, switching to desktop mode, or returning to a visible
 foreground host dismisses an existing transient panel. Displaying over other
 apps' full-screen Spaces depends on macOS WindowServer rules and needs separate
 manual verification; no application activation or Space switch is attempted.
@@ -267,3 +309,32 @@ shows the test panel. Optional `GPT_NIANG_POPUP_PREVIEW=/absolute/path.png` rend
 only its own view to a PNG for layout inspection. The core verifier also checks
 negative-origin and small-screen geometry; that does not substitute for physical
 multi-monitor or full-screen Spaces testing.
+
+
+### Application lifecycle verification
+
+`bash script/verify_host_link.sh` runs the production lifecycle policy and
+preference checks without XCTest. `GPT_NIANG_SDK` may select an installed SDK.
+After building, `python3 script/verify_host_link_native.py dist/GPTNiangMac.app`
+uses two temporary apps and the actual bundled helper to verify application
+launch/quit, manual pet exit, disabling/re-enabling and helper restart while
+the host is already open. It does not quit the user's real host or register a
+persistent service. The corresponding XCTest cases are `HostLinkTests`.
+Actual system background-activity approval and a host restart should also be
+checked on the installed application; policy tests do not prove OS approval.
+
+### Selectable alert sounds
+
+Completion, command/permission, question, and quota alerts each have a sound
+picker and explicit preview button. Choices are the original bundled sound and
+macOS Ping, Glass, Pop, Tink, Basso (loaded from the system, not redistributed).
+Old/missing/unknown selections fall back to the original sound without resetting
+other preferences. Preview uses current volume, does not enable reminders, and
+is disabled at zero volume. A new preview replaces the preceding alert sound.
+Within one simultaneous batch, audible command/permission requests take priority,
+then questions, then completion; the existing one-second audio coalescing remains.
+If a selected system sound is unavailable, playback falls back to release.wav.
+
+### Unclassified native notifications
+
+Actual native notification requests with unrecognized kinds or unrecognized completion identities now produce a neutral ChatGPT reminder. Known permission/question/completion events keep their classification. Generic reminders inherit completion enabled, sound, tone and popup controls. Refresh/idle records and renderer copies still do not trigger alerts. This does not detect events the host never emits.

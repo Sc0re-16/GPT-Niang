@@ -100,4 +100,31 @@ final class AlertTests: XCTestCase {
         state.dismiss(); XCTAssertFalse(state.visible(now: 111))
     }
 
+    func testRequestPoliciesAndUpgradePreserveIndependentAudio() throws {
+        let data = Data(#"{"completionEnabled":true,"soundEnabled":true,"completionPopupEnabled":true}"#.utf8)
+        var prefs = try JSONDecoder().decode(AlertPreferences.self, from: data)
+        XCTAssertTrue(prefs.commandEnabled && prefs.questionEnabled)
+        XCTAssertTrue(prefs.sound(for: .completion) && prefs.popup(for: .question))
+        prefs.soundEnabled = false
+        XCTAssertTrue(prefs.sound(for: .completion), "quota audio cannot mute completion")
+        prefs.completionSoundEnabled = false
+        XCTAssertTrue(prefs.sound(for: .command))
+        prefs.commandPopupEnabled = false
+        XCTAssertTrue(prefs.popup(for: .question))
+        XCTAssertFalse(prefs.popup(for: .permission))
+        XCTAssertEqual(try JSONDecoder().decode(AlertPreferences.self, from: JSONEncoder().encode(prefs)), prefs)
+    }
+
+    func testSoundSelectionMigrationAndInvalidValueFallback() throws {
+        let old = try JSONDecoder().decode(AlertPreferences.self, from: Data(#"{"completionEnabled":true}"#.utf8))
+        XCTAssertEqual(old.completionTone, .original)
+        var prefs = try JSONDecoder().decode(AlertPreferences.self, from: Data(#"{"completionTone":"removed","questionTone":42,"weekThreshold":37}"#.utf8))
+        XCTAssertEqual(prefs.completionTone, .original)
+        XCTAssertEqual(prefs.questionTone, .original)
+        XCTAssertEqual(prefs.weekThreshold, 37)
+        prefs.commandTone = .ping; prefs.completionTone = .glass
+        XCTAssertEqual(prefs.tone(for: .permission), .ping)
+        XCTAssertEqual(try JSONDecoder().decode(AlertPreferences.self, from: JSONEncoder().encode(prefs)), prefs)
+    }
+
 }

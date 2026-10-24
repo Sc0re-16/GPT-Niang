@@ -62,9 +62,9 @@ final class AlertCoordinatorTests: XCTestCase {
     @MainActor func testHiddenCompletionSoundsImmediatelyButQueuedBubbleDoesNotReplaySound() async throws {
         let model = try makeModel("background-sound")
         defer { try? FileManager.default.removeItem(at: model.dataDirectory) }
-        model.alertPreferences.completionEnabled = true; model.alertPreferences.soundEnabled = true
+        model.alertPreferences.completionEnabled = true; model.alertPreferences.soundEnabled = true; model.alertPreferences.completionSoundEnabled = true
         var tones = 0
-        let coordinator = AlertCoordinator(model: model, notifications: FakeAlertNotifications(), playSound: { tones += 1 })
+        let coordinator = AlertCoordinator(model: model, notifications: FakeAlertNotifications(), playSound: { _ in tones += 1 })
         let event = try JSONSerialization.data(withJSONObject: ["events": [["threadId": "test", "eventId": "complete", "at": Date().timeIntervalSince1970 * 1000]]]) + Data([10])
         coordinator.windowVisible = false; coordinator.windowBusy = true; coordinator.consume(event)
         XCTAssertEqual(tones, 1); XCTAssertFalse(model.bubble)
@@ -82,10 +82,10 @@ final class AlertCoordinatorTests: XCTestCase {
                 model.followCodex = true
                 model.alertPreferences.completionEnabled = true
                 model.alertPreferences.completionPopupEnabled = popup
-                model.alertPreferences.soundEnabled = sound
+                model.alertPreferences.soundEnabled = sound; model.alertPreferences.completionSoundEnabled = sound
                 var sounds = 0, presentations = 0
                 let coordinator = AlertCoordinator(model: model, notifications: FakeAlertNotifications(), playSound: { sounds += 1 })
-                coordinator.presentCompletionPopup = { count in presentations += count; return true }
+                coordinator.presentCompletionPopup = { count in presentations += count.values.reduce(0, +); return true }
                 let event = try JSONSerialization.data(withJSONObject: ["events": [["threadId": "test", "eventId": "one", "at": Date().timeIntervalSince1970 * 1000]]]) + Data([10])
                 coordinator.windowVisible = false; coordinator.hostFrontmost = false
                 coordinator.consume(event); coordinator.consume(event)

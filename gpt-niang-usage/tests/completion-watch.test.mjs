@@ -15,7 +15,7 @@ test('only a matching explicit complete after a start emits metadata, never a ca
   assert.deepEqual(events.drain(),[]);
   events.accept(event('task_complete',3000,'wrong'));assert.deepEqual(events.drain(),[]);
   events.accept(event('task_complete',4000));events.accept(event('task_complete',4000));
-  assert.deepEqual(events.drain(),[{threadId:'thread',eventId:'thread:turn1:4000',at:4000}]);
+  assert.deepEqual(events.drain(),[{threadId:'thread',eventId:'thread:turn1',at:4000}]);
   for(const stop of ['turn_aborted','task_failed']){
     events.accept(event('task_started'));events.accept(event(stop,2000));events.accept(event('task_complete',3000));
     assert.deepEqual(events.drain(),[]);
@@ -126,13 +126,14 @@ test('the real helper reads a read-only SQLite fixture, emits new completions an
     `INSERT INTO threads VALUES('a','private title','${file.replaceAll("'","''")}',0,1,'vscode');`],{encoding:'utf8'});
   assert.equal(sql.status,0,sql.stderr);
   const child=spawn(process.execPath,[fileURLToPath(new URL('../runtime/completion-watch.mjs',import.meta.url))],
-    {env:{...process.env,CODEX_HOME:home},stdio:['pipe','pipe','pipe']});
+    {env:{...process.env,CODEX_HOME:home,GPT_NIANG_NOTIFICATION_LOG_ROOT:path.join(home,'no-logs')},stdio:['pipe','pipe','pipe']});
   t.after(()=>child.kill());
   const lines=createInterface({input:child.stdout});
   const iterator=lines[Symbol.asyncIterator]();
-  const first=JSON.parse((await iterator.next()).value);assert.deepEqual(first,{events:[],sessionCount:1,error:null});
+  const first=JSON.parse((await iterator.next()).value);assert.deepEqual(first,{events:[],sessionCount:1,error:null,notificationLogAvailable:false});
   const at=Date.now();append(event('task_started',at),event('task_complete',at+1));
-  const next=JSON.parse((await iterator.next()).value);
+  let next;
+  do { next=JSON.parse((await iterator.next()).value); } while (!next.events.length);
   assert.equal(next.events.length,1);assert.equal(next.error,null);
   assert.equal(JSON.stringify(next).includes('private'),false);
   const closed=new Promise(resolve=>child.once('exit',resolve));child.stdin.end();

@@ -12,17 +12,24 @@ final class CompletionPopupController {
     private(set) var panel: NSPanel?
     private var lifetime = CompletionPopupLifetime()
     private var generation = 0
+    private var categories: [TaskAlertKind: Int] = [:]
     var isVisible: Bool { panel?.isVisible == true }
     var count: Int { lifetime.count }
 
     @discardableResult func present(count: Int, model: WidgetModel) -> Bool {
+        present(counts: [.completion: count], model: model)
+    }
+    @discardableResult func present(counts: [TaskAlertKind: Int], model: WidgetModel) -> Bool {
+        let count = counts.values.reduce(0, +)
         guard count > 0 else { return false }
         let mouse = NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main else { return false }
         let area = screen.visibleFrame
         guard let frame = WidgetPlacement.completionFrame(area: area, scale: model.scale) else { return false }
+        if !lifetime.visible(now: ProcessInfo.processInfo.systemUptime) { categories.removeAll() }
+        for (kind, value) in counts { categories[kind] = min(999, (categories[kind] ?? 0) + value) }
         lifetime.record(count: count, now: ProcessInfo.processInfo.systemUptime)
-        let text = lifetime.count == 1 ? model.text("Codex 本轮回复已结束") : model.text("Codex 有 %@ 轮回复已结束", String(lifetime.count))
+        let text = model.taskAlertText(categories)
         let scale = frame.width / 378
         if panel == nil {
             let window = CompletionPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -34,7 +41,7 @@ final class CompletionPopupController {
             panel = window
         }
         guard let panel else { return false }
-        panel.title = model.text("GPT 娘 · 完成提示")
+        panel.title = model.text("GPT 娘 · 任务提醒")
         panel.contentView = NSHostingView(rootView: CompletionPopupView(image: model.characterImage, text: text, scale: scale))
         panel.setFrame(frame, display: true)
         // A nonactivating, mouse-transparent panel: never activate the app or
@@ -49,7 +56,7 @@ final class CompletionPopupController {
         return true
     }
     func dismiss() {
-        generation += 1; lifetime.dismiss()
+        generation += 1; lifetime.dismiss(); categories.removeAll()
         panel?.orderOut(nil)
     }
 }
@@ -71,7 +78,7 @@ struct CompletionPopupView: View {
                 .frame(width: 17, height: 12).offset(x: 142, y: 214)
             Text(text).font(.system(size: 23, weight: .semibold, design: .rounded))
                 .foregroundStyle(accent).multilineTextAlignment(.center)
-                .lineLimit(3).minimumScaleFactor(0.6)
+                .lineLimit(5).minimumScaleFactor(0.6)
                 .frame(width: 218, height: 126).offset(x: 46, y: 22)
             if let image {
                 Image(nsImage: image).resizable().interpolation(.high).scaledToFit()

@@ -5,6 +5,7 @@ import os
 
 @MainActor
 final class WidgetModel: ObservableObject {
+    @Published var hostLinkPreferences = HostLinkPreferences()
     @Published var alertPreferences = AlertPreferences()
     @Published var alertPermissionDenied = false
     @Published var alertMonitorError: String?
@@ -57,6 +58,7 @@ final class WidgetModel: ObservableObject {
     private var timer: Timer?
     private var quotes: [Quote] = []
     private var sounds: [NSSound] = []
+    private var alertSound: NSSound?
     private var lastQuote: String?
     private var quoteGeneration = 0
     private var refreshUntil = Date.distantPast
@@ -70,6 +72,10 @@ final class WidgetModel: ObservableObject {
         // Keep preferences together with quota state; no shared Codex config edits.
         let prefs = dataDirectory.appendingPathComponent("preferences.json")
         let values = (try? Data(contentsOf: prefs)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        if let raw = values["hostLink"], let encoded = try? JSONSerialization.data(withJSONObject: raw),
+           let decoded = try? JSONDecoder().decode(HostLinkPreferences.self, from: encoded) {
+            hostLinkPreferences = decoded
+        }
         if let raw = values["alerts"], let data = try? JSONSerialization.data(withJSONObject: raw),
            var decoded = try? JSONDecoder().decode(AlertPreferences.self, from: data) {
             decoded.validate(); alertPreferences = decoded
@@ -188,7 +194,7 @@ final class WidgetModel: ObservableObject {
         try? writeJSON(["visible": visible, "backgroundQuota": alertPreferences.quotaEnabled, "at": Date().timeIntervalSince1970 * 1000,
                         "pid": ProcessInfo.processInfo.processIdentifier], to: dataDirectory.appendingPathComponent("presence.json"))
     }
-    func savePreferences() {
+    @discardableResult func savePreferences() -> Bool {
         let file = dataDirectory.appendingPathComponent("preferences.json")
         var values = (try? Data(contentsOf: file)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
         let current: [String: Any] = ["layoutVersion": 2, "scale": scale, "volume": volume, "followCodex": followCodex, "loginRequested": loginRequested, "x": x, "y": y,
@@ -197,9 +203,12 @@ final class WidgetModel: ObservableObject {
             "desktopTopmost": desktopTopmost, "soundOn": soundOn, "hideMenu": hideMenu]
         if let data = try? JSONEncoder().encode(alertPreferences),
            let raw = try? JSONSerialization.jsonObject(with: data) { values["alerts"] = raw }
+        if let data = try? JSONEncoder().encode(hostLinkPreferences),
+           let raw = try? JSONSerialization.jsonObject(with: data) { values["hostLink"] = raw }
         values.merge(current) { _, new in new }
         values["desktopLeft"] = desktopLeft; values["desktopBottom"] = desktopBottom
-        try? writeJSON(values, to: file)
+        do { try writeJSON(values, to: file); return true }
+        catch { return false }
     }
     func migrateDesktopPosition(area: CGRect, size: CGSize) {
         guard desktopNeedsMigration else { return }
@@ -225,12 +234,21 @@ final class WidgetModel: ObservableObject {
         message = text; bubble = true
         updateAppearance(); restartTTL(delay: 0.52)
     }
-    func playAlertSound() {
-        if alertPreferences.soundEnabled, volume > 0,
-           let sound = NSSound(contentsOf: resources.appendingPathComponent("release.wav"), byReference: false) {
-            sounds.removeAll { !$0.isPlaying }; sounds.append(sound)
-            sound.volume = Float(volume); sound.play()
-        }
+    func taskAlertText(_ counts: [TaskAlertKind: Int]) -> String {
+        TaskAlertKind.allCases.compactMap { kind -> String? in
+            guard let count = counts[kind], count > 0 else { return nil }
+            return text(kind.messageKey) + (count > 1 ? text("（%@ 项）", String(count)) : "")
+        }.joined(separator: "\n")
+    }
+    func playAlertSound(_ tone: AlertSound = .original) {
+        alertSound?.stop()
+        guard volume > 0 else { return }
+        let fallback = resources.appendingPathComponent("release.wav")
+        let selected = tone.systemName.map { URL(fileURLWithPath: "/System/Library/Sounds/\($0).aiff") } ?? fallback
+        guard let sound = NSSound(contentsOf: selected, byReference: false)
+                ?? NSSound(contentsOf: fallback, byReference: false) else { return }
+        alertSound = sound
+        sound.volume = Float(volume); sound.play()
     }
     func showQuote() {
         let opening = !bubble

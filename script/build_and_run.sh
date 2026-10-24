@@ -27,6 +27,19 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Helpers" "$APP_BUNDL
 cp "$BIN_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 cp -R "$BIN_DIR/GPTNiangMac_GPTNiangCore.bundle" "$APP_BUNDLE/Contents/Resources/"
 cp "$BIN_DIR/GPTNiangUpdater" "$APP_BUNDLE/Contents/Helpers/GPTNiangUpdater"
+cp "$BIN_DIR/GPTNiangHostLink" "$APP_BUNDLE/Contents/Helpers/GPTNiangHostLink"
+mkdir -p "$APP_BUNDLE/Contents/Library/LaunchAgents"
+cat > "$APP_BUNDLE/Contents/Library/LaunchAgents/io.github.t7moris.GPTNiangMac.HostLink.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>io.github.t7moris.GPTNiangMac.HostLink</string>
+<key>BundleProgram</key><string>Contents/Helpers/GPTNiangHostLink</string>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><true/>
+<key>ProcessType</key><string>Background</string>
+</dict></plist>
+PLIST
 for runtime in "$ROOT_DIR/gpt-niang-usage/runtime/"*.mjs; do
   if [ "$(basename "$runtime")" != update.mjs ]; then cp "$runtime" "$APP_BUNDLE/Contents/Resources/Backend/runtime/"; fi
 done
@@ -58,6 +71,7 @@ PLIST
 /usr/bin/xattr -rd com.apple.FinderInfo "$APP_BUNDLE" 2>/dev/null || true
 /usr/bin/xattr -rd com.apple.ResourceFork "$APP_BUNDLE" 2>/dev/null || true
 /usr/bin/codesign --force --sign - "$APP_BUNDLE/Contents/Helpers/GPTNiangUpdater"
+/usr/bin/codesign --force --sign - "$APP_BUNDLE/Contents/Helpers/GPTNiangHostLink"
 /usr/bin/codesign --force --deep --sign - "$APP_BUNDLE"
 open_app() { /usr/bin/open -n "$APP_BUNDLE" --args "${@:2}"; }
 

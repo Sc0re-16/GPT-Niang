@@ -1,4 +1,6 @@
 import path from 'node:path';
+import fs from 'node:fs';
+import {NotificationLogMonitor} from './desktop-notifications.mjs';
 import {fileURLToPath} from 'node:url';
 import {RolloutTail, allowedRollout, readRecentThreads} from './thread-speed.mjs';
 
@@ -18,7 +20,7 @@ export class CompletionEvents {
     if (event?.type !== 'task_complete') return;
     if (event.error != null) { this.reset(); return; }
     if (at < this.running.at) return;
-    this.events.push({threadId: this.threadId, eventId: `${this.threadId}:${this.running.turnId ?? this.running.at}:${at}`, at});
+    this.events.push({threadId: this.threadId, eventId: `${this.threadId}:${this.running.turnId ?? this.running.at}`, at});
     this.reset();
   }
   drain() { const events = this.events; this.events = []; return events; }
@@ -56,15 +58,50 @@ export class CompletionMonitor {
 }
 function run() {
   const home = process.env.CODEX_HOME || path.join(process.env.HOME || '', '.codex');
+  const logRoot = process.env.GPT_NIANG_NOTIFICATION_LOG_ROOT || path.join(process.env.HOME || '', 'Library/Logs/com.openai.codex');
   const monitor = new CompletionMonitor(home);
+  const notices = new NotificationLogMonitor(logRoot);
   const send = value => process.stdout.write(JSON.stringify(value) + '\n');
-  const update = () => {
-    try { const rows = readRecentThreads(home, {userFacingOnly: true}); send({events: monitor.update(rows), sessionCount: rows.length, error: null}); }
-    catch { send({events: [], sessionCount: 0, error: 'LOCAL_INDEX_UNAVAILABLE'}); }
+  let rows = [], indexedAt = 0, indexError = null, pending = null, stopped = false;
+  const watchers = new Map();
+  const schedule = () => { if (!pending && !stopped) pending = setTimeout(() => {pending = null; update();}, Math.max(200, 1000 - (Date.now() - indexedAt))); };
+  const watch = (directory, recursive) => {
+    if (watchers.has(directory) || !fs.existsSync(directory)) return;
+    try {
+      const watcher = fs.watch(directory, {recursive}, event => {
+        if (event === 'rename' && !recursive) { watcher.close(); watchers.delete(directory); }
+        schedule();
+      });
+      watchers.set(directory, watcher);
+      watcher.on('error', () => {watcher.close(); watchers.delete(directory);});
+    } catch { /* Slow reconciliation remains available on unsupported filesystems. */ }
   };
-  update(); const timer = setInterval(update, 3000);
+  const update = () => {
+    // Index discovery is bounded even during sustained token streaming. Existing
+    // file tails are read on writes; the 30-second timer only repairs missed events.
+    if (Date.now() - indexedAt >= 1000) {
+      indexedAt = Date.now();
+      try { rows = readRecentThreads(home, {userFacingOnly:true}); indexError = null; }
+      catch { indexError = 'LOCAL_INDEX_UNAVAILABLE'; }
+    }
+    const events = [...monitor.update(rows), ...notices.update()];
+    const unique = [...new Map(events.map(e => [e.eventId, e])).values()];
+    watch(home, false); watch(path.join(home, 'sessions'), true); watch(logRoot, true);
+    for (const {tail} of monitor.tails.values()) watch(tail.file, false);
+    for (const file of notices.tails.keys()) watch(file, false);
+    const keep = new Set([home, path.join(home, 'sessions'), logRoot,
+      ...[...monitor.tails.values()].map(v => v.tail.file), ...notices.tails.keys()]);
+    for (const [file, watcher] of watchers) if (!keep.has(file)) {watcher.close(); watchers.delete(file);}
+    send({events:unique, sessionCount:rows.length, error:indexError,
+      notificationLogAvailable:notices.available});
+  };
+  update(); schedule(); const timer = setInterval(update, 30000);
   process.stdin.resume();
-  process.stdin.on('end', () => { clearInterval(timer); process.exit(0); });
-  process.on('SIGTERM', () => { clearInterval(timer); process.exit(0); });
+  const stop = () => {
+    stopped = true; clearInterval(timer); clearTimeout(pending);
+    for (const watcher of watchers.values()) watcher.close();
+    process.exit(0);
+  };
+  process.stdin.on('end', stop); process.on('SIGTERM', stop);
 }
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) run();

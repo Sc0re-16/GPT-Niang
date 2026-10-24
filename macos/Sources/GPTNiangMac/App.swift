@@ -87,7 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         panel.contentView = NSHostingView(rootView: WidgetView(model: model, onDrag: { [weak self] in self?.drag($0) }, onSettings: { [weak self] in self?.showSettings() }, onContextMenu: { [weak self] event, view in self?.showContextMenu(event, view: view) }))
         model.alerts.presentCompletionPopup = { [weak self] count in
             guard let self else { return false }
-            return self.completionPopup.present(count: count, model: self.model)
+            return self.completionPopup.present(counts: count, model: self.model)
         }
         model.alerts.dismissCompletionPopup = { [weak self] in self?.completionPopup.dismiss() }
         buildMenu()
@@ -113,6 +113,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             if self?.model.workerRunning == true { NativeUpdater.confirmLaunch(data: dataDirectory) }
         }
         logger.info("macOS widget launched")
+        // Only the installed application's normal data directory may register
+        // background activity; disposable QA instances must remain isolated.
+        if argument("--data-dir") == nil && (model.hostLinkPreferences.enabled || args.contains("--enable-host-link")) {
+            do { try HostLinkRegistration.setEnabled(true, model: model) }
+            catch {
+                model.settingsError = model.text("应用联动设置失败：%@", error.localizedDescription)
+                showSettings()
+            }
+        }
     }
     @objc private func restoreWindowOrdering() {
         hostNeedsOrdering = true; desktopNeedsOrdering = true
@@ -323,8 +332,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             if model.facingLeft != left { model.facingLeft = left }
         }
         model.alerts.hostFrontmost = codexFrontmost
-        if completionPopup.isVisible && (!model.followCodex || !model.alertPreferences.completionEnabled ||
-            !model.alertPreferences.completionPopupEnabled || (codexFrontmost && panel.isVisible)) {
+        if completionPopup.isVisible && (!model.followCodex || !model.alertPreferences.anyTaskPopup || (codexFrontmost && panel.isVisible)) {
             completionPopup.dismiss()
         }
         model.alerts.windowVisible = panel.isVisible
@@ -338,6 +346,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 "queryOK": model.snapshot.queryOk ?? false, "quotaWindowCount": model.snapshot.windows.count,
                 "hasMessage": model.message != nil, "bubbleVisible": model.bubble, "scale": model.scale,
                 "alertShortEnabled": model.alertPreferences.shortEnabled, "alertWeekEnabled": model.alertPreferences.weekEnabled,
+                "hostLinkEnabled": model.hostLinkPreferences.enabled,
+                "hostLinkServiceStatus": HostLinkRegistration.service.status.rawValue,
+                "alertCommandEnabled": model.alertPreferences.commandEnabled,
+                "alertQuestionEnabled": model.alertPreferences.questionEnabled,
+                "alertRequestEvents": model.alerts.requestEvents,
+                "alertNotificationLogAvailable": model.alerts.notificationLogAvailable,
                 "alertCompletionEnabled": model.alertPreferences.completionEnabled,
                 "alertCompletionPopupEnabled": model.alertPreferences.completionPopupEnabled,
                 "alertPopupVisible": completionPopup.isVisible, "alertPopupCount": completionPopup.count,

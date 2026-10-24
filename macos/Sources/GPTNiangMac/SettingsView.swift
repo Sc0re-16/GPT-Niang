@@ -106,6 +106,8 @@ struct SettingsView: View {
                             } catch { loginError = model.text("登入項目設定失敗：%@", String(describing: error.localizedDescription)) }
                         }
                     if let loginError { Text(loginError).font(.caption).foregroundStyle(.orange) }
+                    Divider()
+                    HostLinkSettingsView(model: model)
                 }.padding(10)
             }
     }
