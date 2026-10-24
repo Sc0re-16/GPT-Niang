@@ -53,6 +53,15 @@ final class AlertCoordinator {
             dismissCompletionPopup?()
         }
         model.alertPreferences.validate()
+        var updated = state
+        updated.synchronizeResetPreferences(model.alertPreferences)
+        if updated != state {
+            do {
+                try JSONEncoder().encode(updated).write(to: stateURL, options: .atomic)
+                state = updated
+                model.alertStorageError = nil
+            } catch { model.alertStorageError = model.text("提醒记录无法保存，请检查数据目录权限。") }
+        }
         let enabled = model.alertPreferences.quotaEnabled
         if enabled && !quotaWasEnabled { authorizationResolved = false; refreshAuthorization(request: true) }
         quotaWasEnabled = enabled
@@ -96,7 +105,9 @@ final class AlertCoordinator {
                     if !alerts.isEmpty {
                         let texts = alerts.map { alert in
                             let window = alert.window
-                            let summary = alert.exhausted
+                            let summary = alert.reset
+                                ? model.text("%@额度周期已重置，剩余 %@%%", window.title(language: model.language), window.percentageText)
+                                : alert.exhausted
                                 ? model.text("%@额度已耗尽", window.title(language: model.language))
                                 : model.text("%@额度剩余 %@%%", window.title(language: model.language), window.percentageText)
                             return summary + " · " + window.resetText(at: now, language: model.language)

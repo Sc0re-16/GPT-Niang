@@ -346,6 +346,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 "queryOK": model.snapshot.queryOk ?? false, "quotaWindowCount": model.snapshot.windows.count,
                 "hasMessage": model.message != nil, "bubbleVisible": model.bubble, "scale": model.scale,
                 "alertShortEnabled": model.alertPreferences.shortEnabled, "alertWeekEnabled": model.alertPreferences.weekEnabled,
+                "alertShortResetEnabled": model.alertPreferences.shortResetEnabled,
+                "alertWeekResetEnabled": model.alertPreferences.weekResetEnabled,
                 "hostLinkEnabled": model.hostLinkPreferences.enabled,
                 "hostLinkServiceStatus": HostLinkRegistration.service.status.rawValue,
                 "alertCommandEnabled": model.alertPreferences.commandEnabled,

@@ -338,3 +338,23 @@ If a selected system sound is unavailable, playback falls back to release.wav.
 ### Unclassified native notifications
 
 Actual native notification requests with unrecognized kinds or unrecognized completion identities now produce a neutral ChatGPT reminder. Known permission/question/completion events keep their classification. Generic reminders inherit completion enabled, sound, tone and popup controls. Refresh/idle records and renderer copies still do not trigger alerts. This does not detect events the host never emits.
+
+### Quota reset reminders
+
+Short-period and weekly reset reminders have separate switches, both default off.
+They are independent of low-balance alerts and keep the existing quota worker
+active while the pet is hidden. They use quota system notifications, queued pet
+bubbles and the existing quota sound/volume choice (no extra task popup).
+A reminder requires a fresh successful identified-account reply with a later
+reset deadline after the previous deadline has elapsed. A balance increase alone
+or a countdown reaching zero does not trigger it. The first valid reply establishes
+a baseline, and disabling clears that category's baseline. Missing reset times,
+failed/stale replies and out-of-order samples never trigger resets. Per-account,
+per-window observations are persisted atomically before delivery, so normal
+refreshes and restarts do not repeat notifications. An offline rollover can be
+reported once on the next valid refresh while enabled; multiple missed cycles
+coalesce. A changed window length establishes a new baseline. Short means the
+shortest timed window below one day; weekly means exactly 10080 minutes.
+Delivery is usually within the worker's next 60-second refresh, not at an exact
+wall-clock deadline. A reset reports the current remaining percentage, which
+need not be 100% if usage has already resumed.

@@ -203,6 +203,76 @@ import GPTNiangCore
         check(soundReloaded.completionTone == .glass, "sound choice persists")
         check(model.taskAlertText([.generic: 1]) == model.text("ChatGPT 有新提醒，请查看"), "generic reminder never claims completion")
         check(model.alertPreferences.tone(for: .generic) == model.alertPreferences.completionTone, "generic uses completion output policy")
+        // Reset-only reminders must operate independently of low-balance alerts.
+        let resetPrefs = try JSONDecoder().decode(AlertPreferences.self, from: Data(#"{"shortResetEnabled":true,"weekResetEnabled":true}"#.utf8))
+        check(resetPrefs.quotaEnabled, "reset-only preferences keep quota monitoring active")
+        func resetSnapshot(_ time: Double, _ reset: Double?, remaining: Double = 90, account: String? = "reset-account", ok: Bool = true, minutes: Int = 300) -> UsageSnapshot {
+            UsageSnapshot(ok: true, queryOk: ok, observedAt: time * 1000,
+                windows: [QuotaWindow(minutes: minutes, remaining: remaining, resetsAt: reset)], accountKey: account)
+        }
+        var resetState = QuotaAlertState()
+        let initial = resetSnapshot(10000, 10100)
+        check(resetState.evaluate(initial, preferences: resetPrefs, now: Date(timeIntervalSince1970: 10000)).isEmpty, "first enable establishes baseline")
+        check(resetState.evaluate(resetSnapshot(10020, 10100, remaining: 100), preferences: resetPrefs, now: Date(timeIntervalSince1970: 10020)).isEmpty, "balance recovery alone is not reset")
+        check(resetState.evaluate(resetSnapshot(10050, 10200), preferences: resetPrefs, now: Date(timeIntervalSince1970: 10050)).isEmpty, "early reset-time correction is not reset")
+        check(resetState.evaluate(resetSnapshot(10100, 10300), preferences: resetPrefs, now: Date(timeIntervalSince1970: 10100)).isEmpty, "corrected deadline must elapse first")
+        let rollover = resetSnapshot(10300, 11000)
+        check(resetState.evaluate(rollover, preferences: resetPrefs, now: Date(timeIntervalSince1970: 10300)).count == 1, "confirmed cycle rollover reminds without low balance")
+        resetState = try JSONDecoder().decode(QuotaAlertState.self, from: JSONEncoder().encode(resetState))
+        check(resetState.evaluate(rollover, preferences: resetPrefs, now: Date(timeIntervalSince1970: 10300)).isEmpty, "restart does not repeat reset")
+        let savedResetState = resetState
+        for bad in [resetSnapshot(11000,12000,account:nil), resetSnapshot(11000,12000,ok:false), resetSnapshot(11000,12000,remaining:-1)] {
+            check(resetState.evaluate(bad, preferences: resetPrefs, now: Date(timeIntervalSince1970:11000)).isEmpty && resetState == savedResetState, "invalid reset snapshot cannot advance baseline")
+        }
+        check(resetState.evaluate(rollover, preferences: resetPrefs, now: Date(timeIntervalSince1970:20000)).isEmpty && resetState == savedResetState, "stale reset cache ignored")
+        check(resetState.evaluate(resetSnapshot(11000,12000,account:"other"), preferences: resetPrefs, now: Date(timeIntervalSince1970:11000)).isEmpty, "account switch establishes separate baseline")
+        check(resetState.evaluate(resetSnapshot(11000,nil), preferences: resetPrefs, now: Date(timeIntervalSince1970:11000)).isEmpty, "missing reset date never guesses")
+        check(resetState.evaluate(resetSnapshot(11000,12000), preferences: resetPrefs, now: Date(timeIntervalSince1970:11000)).count == 1, "valid refresh after failure still detects reset")
+        _ = resetState.evaluate(resetSnapshot(11000,12000), preferences: AlertPreferences(), now: Date(timeIntervalSince1970:11000))
+        check(resetState.evaluate(resetSnapshot(12000,13000), preferences: resetPrefs, now: Date(timeIntervalSince1970:12000)).isEmpty, "re-enable baselines rather than replaying disabled period")
+        let shortOnly = try JSONDecoder().decode(AlertPreferences.self, from: Data(#"{"shortResetEnabled":true}"#.utf8))
+        var weeklyState = QuotaAlertState()
+        _ = weeklyState.evaluate(resetSnapshot(10000,10100,minutes:10080), preferences: shortOnly, now: Date(timeIntervalSince1970:10000))
+        check(weeklyState.evaluate(resetSnapshot(10100,11000,minutes:10080), preferences: shortOnly, now: Date(timeIntervalSince1970:10100)).isEmpty, "short reset switch does not enable weekly reset")
+        _ = weeklyState.evaluate(resetSnapshot(10100,11000,minutes:10080), preferences: resetPrefs, now: Date(timeIntervalSince1970:10100))
+        check(weeklyState.evaluate(resetSnapshot(11000,12000,minutes:10080), preferences: resetPrefs, now: Date(timeIntervalSince1970:11000)).count == 1, "weekly switch detects actual weekly rollover")
+        var migratedState = try JSONDecoder().decode(QuotaAlertState.self, from: Data(#"{"latches":{}}"#.utf8))
+        check(migratedState.evaluate(initial, preferences: resetPrefs, now: Date(timeIntervalSince1970:10000)).isEmpty, "legacy state decodes with reset baseline empty")
+        for permission in [false, true] {
+            let resetDirectory = directory.appendingPathComponent("reset-integration-\(permission)")
+            try FileManager.default.createDirectory(at: resetDirectory, withIntermediateDirectories: true)
+            let resetModel = WidgetModel(dataDirectory: resetDirectory, resources: directory)
+            resetModel.alertPreferences = resetPrefs
+            resetModel.alertPreferences.soundEnabled = true
+            resetModel.alertPreferences.quotaTone = .glass
+            resetModel.volume = 0.5
+            let resetNotifications = TestNotifications(); resetNotifications.allowed = permission
+            var resetSounds: [AlertSound] = []
+            let resetCoordinator = AlertCoordinator(model: resetModel, notifications: resetNotifications,
+                playSound: { resetSounds.append($0) })
+            let baselineTime = Date().timeIntervalSince1970
+            resetModel.snapshot = resetSnapshot(baselineTime, baselineTime + 0.3)
+            resetCoordinator.windowVisible = false
+            resetCoordinator.configure()
+            check(resetNotifications.requests == 1 && resetNotifications.deliveries.isEmpty && resetSounds.isEmpty, "reset opt-in requests permission without baseline alert")
+            Thread.sleep(forTimeInterval: 0.5)
+            let cycleTime = Date().timeIntervalSince1970
+            resetModel.snapshot = resetSnapshot(cycleTime, cycleTime + 3600, remaining: 98)
+            resetCoordinator.tick()
+            check(resetNotifications.deliveries.count == (permission ? 1 : 0) && resetSounds == [.glass], "confirmed reset routes system notification by permission and independent quota sound")
+            check(!resetModel.bubble, "hidden reset does not force main window visible")
+            resetCoordinator.windowVisible = true; resetCoordinator.tick()
+            check(resetModel.bubble && resetSounds.count == 1, "reset bubble appears later without replaying sound")
+            resetModel.hideBubble()
+            let resetRestarted = AlertCoordinator(model: resetModel, notifications: resetNotifications,
+                playSound: { resetSounds.append($0) })
+            resetRestarted.windowVisible = true; resetRestarted.configure()
+            check(!resetModel.bubble && resetSounds.count == 1, "coordinator restart honors saved reset dedup")
+            resetModel.alertPreferences = AlertPreferences(); resetRestarted.configure()
+            let persistedReset = try JSONDecoder().decode(QuotaAlertState.self, from: Data(contentsOf: resetDirectory.appendingPathComponent("alert-state.json")))
+            check(persistedReset.resetObservations.isEmpty, "disabling final quota switch persists cleared baseline")
+            resetCoordinator.stop(); resetRestarted.stop()
+        }
         print("Native alert coordinator checks: \(checks) passed (injected notification permissions, no OS notification sent)")
     }
 }

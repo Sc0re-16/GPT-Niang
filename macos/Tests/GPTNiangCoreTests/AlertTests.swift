@@ -127,4 +127,34 @@ final class AlertTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(AlertPreferences.self, from: JSONEncoder().encode(prefs)), prefs)
     }
 
+    func testResetRemindersAreIndependentAndPersistDeduplication() throws {
+        var prefs = AlertPreferences()
+        prefs.shortResetEnabled = true
+        XCTAssertTrue(prefs.quotaEnabled)
+        XCTAssertFalse(prefs.shortEnabled)
+        var state = QuotaAlertState()
+        XCTAssertTrue(state.evaluate(sample(90), preferences: prefs, now: now).isEmpty)
+        let later = Date(timeIntervalSince1970: 12000)
+        let fresh = sample(85, observed: 12000000, reset: 13000)
+        let alerts = state.evaluate(fresh, preferences: prefs, now: later)
+        XCTAssertEqual(alerts.count, 1)
+        XCTAssertEqual(alerts.first?.reset, true)
+        state = try JSONDecoder().decode(QuotaAlertState.self, from: JSONEncoder().encode(state))
+        XCTAssertTrue(state.evaluate(fresh, preferences: prefs, now: later).isEmpty)
+        prefs.shortResetEnabled = false
+        state.synchronizeResetPreferences(prefs)
+        prefs.shortResetEnabled = true
+        XCTAssertTrue(state.evaluate(sample(100, observed: 14000000, reset: 15000), preferences: prefs,
+                                     now: Date(timeIntervalSince1970: 14000)).isEmpty)
+    }
+    func testResetSettingsAndStateMigrationPreserveExistingPreferences() throws {
+        let prefs = try JSONDecoder().decode(AlertPreferences.self, from: Data(#"{"shortEnabled":true,"weekThreshold":33,"quotaTone":"glass"}"#.utf8))
+        XCTAssertFalse(prefs.shortResetEnabled || prefs.weekResetEnabled)
+        XCTAssertTrue(prefs.shortEnabled)
+        XCTAssertEqual(prefs.weekThreshold, 33)
+        XCTAssertEqual(prefs.quotaTone, .glass)
+        let state = try JSONDecoder().decode(QuotaAlertState.self, from: Data(#"{"latches":{}}"#.utf8))
+        XCTAssertTrue(state.resetObservations.isEmpty)
+    }
+
 }
