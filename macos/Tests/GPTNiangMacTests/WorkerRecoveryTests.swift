@@ -106,6 +106,19 @@ final class WorkerRecoveryTests: XCTestCase {
             XCTAssertFalse(model.workerRunning)
         }
     }
+    @MainActor func testFractionalUptimeReachesTheReplacementCooldownDeadline() async throws {
+        // The five-second cooldown crosses 256 seconds at this uptime.
+        try await withFixture(initialUptime: 224.69351787566157) { root, model, pid, now in
+            for step in 1...30 { model.tick(now: now + Double(step)) }
+            try await self.waitForExit(model)
+            model.tick(now: now + 34)
+            XCTAssertEqual(self.attempts(root), 1)
+            model.tick(now: now + 35)
+            _ = try await self.childPID(root, excluding: pid)
+            XCTAssertTrue(model.workerRunning)
+            XCTAssertEqual(self.attempts(root), 2)
+        }
+    }
     @MainActor func testStaleFutureMalformedAndWrongIdentityCannotResetOutage() async throws {
         for scenario in ["stale", "future", "malformed", "identity"] {
             try await withFixture { root, model, pid, now in
