@@ -217,6 +217,12 @@ try{
   Assert-QuotaLayout
   Save-Preview 'missing-reset'
 
+  Set-Snapshot @{ok=$true;queryOk=$true;accountVerified=$false;observedAt=$now;windows=@($short)}
+  Assert-Equal $script:ui.ShortLeft.Text '75%' 'Direct quota still displays its fresh value'
+  if(!$script:ui.Status.Text.EndsWith('账户待确认')){throw 'Unverified direct quota must be labelled'}
+  Set-Snapshot @{ok=$true;queryOk=$true;accountVerified=$false;observedAt=($now-181000);windows=@($short)}
+  if(!$script:ui.Status.Text.Contains('分钟前')-or !$script:ui.Status.Text.Contains('账户待确认')){throw 'Old unverified quota must show both its age and identity uncertainty'}
+
   Set-Snapshot @{ok=$true;queryOk=$false;observedAt=$now;error='查询超时';windows=@($week)}
   Assert-Equal $script:ui.ShortRow.Visibility Visible 'Failure never infers unsupported window'
   Assert-Equal $script:ui.WeekLeft.Text '90%' 'Same-account stale snapshot stays visible'

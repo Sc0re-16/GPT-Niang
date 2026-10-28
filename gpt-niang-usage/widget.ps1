@@ -730,7 +730,8 @@ function Update-Quota {
   else{
     $at=[DateTimeOffset]::FromUnixTimeMilliseconds([long]$script:status.observedAt).ToLocalTime().ToString('HH:mm:ss')
     if($script:status.error){$script:ui.Status.Text="刷新未成功 · 上次 $at";$dot='#C5A96F'}
-    elseif($age-gt 180){$mins=[Math]::Floor($age/60);$script:ui.Status.Text="$mins 分钟前的额度 · 点击 ↻ 刷新";$dot='#C5A96F'}
+    elseif($age-gt 180){$mins=[Math]::Floor($age/60);$script:ui.Status.Text=if($script:status.accountVerified-eq $false){"$mins 分钟前 · 账户待确认"}else{"$mins 分钟前的额度 · 点击 ↻ 刷新"};$dot='#C5A96F'}
+    elseif($script:status.accountVerified-eq $false){$script:ui.Status.Text="$at 更新 · 账户待确认";$dot='#C5A96F'}
     else{$script:ui.Status.Text="$at 更新 · 实时订阅额度"}
   }
   $script:ui.LiveDot.Fill=[Windows.Media.BrushConverter]::new().ConvertFromString($dot)

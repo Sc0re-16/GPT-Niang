@@ -15,6 +15,14 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(window.remaining, 0)
         XCTAssertEqual(window.resetText(at: Date(timeIntervalSince1970: 101)), "等待更新後的額度")
     }
+    func testDirectQuotaMarksUnverifiedAccountAndKeepsLegacySnapshotsCompatible() throws {
+        let direct = try JSONDecoder().decode(UsageSnapshot.self, from: Data(#"{"ok":true,"queryOk":true,"accountVerified":false,"windows":[]}"#.utf8))
+        let legacy = try JSONDecoder().decode(UsageSnapshot.self, from: Data(#"{"ok":true,"queryOk":true,"windows":[]}"#.utf8))
+        XCTAssertEqual(direct.accountVerified, false)
+        XCTAssertNil(legacy.accountVerified)
+        XCTAssertEqual(InterfaceLanguage.simplified.text("帳戶待確認"), "账户待确认")
+        XCTAssertEqual(InterfaceLanguage.traditional.text("帳戶待確認"), "帳戶待確認")
+    }
     func testPlanMetadataAndArbitraryQuotaWindowTitles() throws {
         let data = Data(#"{"ok":true,"queryOk":true,"plan":"go","planLabel":"Go","windows":[{"minutes":43200,"remaining":88,"resetsAt":null}]}"#.utf8)
         let result = try JSONDecoder().decode(UsageSnapshot.self, from: data)

@@ -165,6 +165,9 @@ struct WidgetView: View {
                         if model.snapshot.stale(at: now) {
                             Text(model.text("舊快照 · 刷新後確認")).font(.system(size: 9)).foregroundStyle(.orange)
                         }
+                        if model.snapshot.accountVerified == false {
+                            Text(model.text("帳戶待確認")).font(.system(size: 9)).foregroundStyle(.orange)
+                        }
                     }
                 }
             }
