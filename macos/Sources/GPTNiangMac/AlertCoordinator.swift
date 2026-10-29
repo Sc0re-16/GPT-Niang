@@ -172,6 +172,13 @@ final class AlertCoordinator {
         task.arguments = [model.resources.appendingPathComponent("Backend/runtime/completion-watch.mjs").path]
         task.standardInput = input; task.standardOutput = output; task.standardError = FileHandle.nullDevice
         task.environment = ProcessInfo.processInfo.environment
+        // Optional, user-reviewed Codex hooks deliver metadata here. Never edit
+        // the host's hook configuration or trust settings from the pet.
+        let permissionEvents = model.dataDirectory.appendingPathComponent("permission-events").resolvingSymlinksInPath()
+        if (try? FileManager.default.createDirectory(at: permissionEvents, withIntermediateDirectories: true,
+                                                   attributes: [.posixPermissions: 0o700])) != nil {
+            task.environment?["GPT_NIANG_PERMISSION_EVENT_DIR"] = permissionEvents.path
+        }
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             if data.isEmpty { handle.readabilityHandler = nil; return }

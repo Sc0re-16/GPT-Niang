@@ -1,6 +1,8 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import {createHash} from 'node:crypto';
 import {NotificationLogMonitor} from './desktop-notifications.mjs';
+import {PermissionHookMonitor} from './permission-hook.mjs';
 import {fileURLToPath} from 'node:url';
 import {RolloutTail, allowedRollout, readRecentThreads} from './thread-speed.mjs';
 
@@ -8,13 +10,34 @@ import {RolloutTail, allowedRollout, readRecentThreads} from './thread-speed.mjs
 // this process. Baseline each file at EOF, never replay completed history.
 export class CompletionEvents {
   constructor(threadId) { this.threadId = threadId; this.reset(); this.events = []; }
-  reset() { this.running = null; }
+  reset() { this.running = null; this.questions = new Map(); this.announcedQuestions = new Set(); }
   accept(record) {
-    if (record?.type !== 'event_msg') return;
-    const event = record.payload, at = Date.parse(record.timestamp);
+    const event = record?.payload, at = Date.parse(record?.timestamp);
     if (!Number.isFinite(at)) return;
+    if (record.type === 'response_item') {
+      if (!this.running || at < this.running.at) return;
+      const id = event?.call_id;
+      if (typeof id !== 'string' || !id || id.length > 200 || this.announcedQuestions.has(id)) return;
+      if (event.type === 'function_call' && ['request_user_input_async', 'functions.request_user_input_async'].includes(event.name)) {
+        this.questions.set(id, at);
+        if (this.questions.size > 256) this.questions.delete(this.questions.keys().next().value);
+      } else if (event.type === 'function_call_output' && this.questions.has(id)) {
+        const startedAt = this.questions.get(id); this.questions.delete(id);
+        if (at < startedAt || typeof event.output !== 'string' || event.output.length > 4096) return;
+        // An async call alone can fail or be unavailable. Announce only its
+        // explicit acceptance, without reading question/answer arguments.
+        let result; try { result = JSON.parse(event.output); } catch { return; }
+        if (result?.accepted !== true) return;
+        this.announcedQuestions.add(id);
+        if (this.announcedQuestions.size > 4096) this.announcedQuestions.delete(this.announcedQuestions.values().next().value);
+        const eventId = 'notice:' + createHash('sha256').update('question-local-' + id).digest('hex');
+        this.events.push({threadId: this.threadId, eventId, kind: 'question', at});
+      }
+      return;
+    }
+    if (record.type !== 'event_msg') return;
     const turnId = typeof event?.turn_id === 'string' ? event.turn_id : null;
-    if (event?.type === 'task_started') { this.running = {turnId, at}; return; }
+    if (event?.type === 'task_started') { this.reset(); this.running = {turnId, at}; return; }
     if (!this.running || (turnId && this.running.turnId && turnId !== this.running.turnId)) return;
     if (event?.type === 'turn_aborted' || event?.type === 'task_failed') { this.reset(); return; }
     if (event?.type !== 'task_complete') return;
@@ -41,7 +64,7 @@ export class CompletionMonitor {
       try {
         if (!this.tails.has(key)) {
           const collector = new CompletionEvents(row.id);
-          const tail = new RolloutTail(file, {liveOnly: this.firstScan, onRecord: record => {
+          const tail = new RolloutTail(file, {liveOnly: this.firstScan, includeToolCalls: true, onRecord: record => {
             if (Date.parse(record.timestamp) >= this.startedAt) collector.accept(record);
           }});
           tail.onReset = () => collector.reset();
@@ -61,6 +84,7 @@ function run() {
   const logRoot = process.env.GPT_NIANG_NOTIFICATION_LOG_ROOT || path.join(process.env.HOME || '', 'Library/Logs/com.openai.codex');
   const monitor = new CompletionMonitor(home);
   const notices = new NotificationLogMonitor(logRoot);
+  const permissions = new PermissionHookMonitor(process.env.GPT_NIANG_PERMISSION_EVENT_DIR);
   const send = value => process.stdout.write(JSON.stringify(value) + '\n');
   let rows = [], indexedAt = 0, indexError = null, pending = null, stopped = false;
   const watchers = new Map();
@@ -84,12 +108,13 @@ function run() {
       try { rows = readRecentThreads(home, {userFacingOnly:true}); indexError = null; }
       catch { indexError = 'LOCAL_INDEX_UNAVAILABLE'; }
     }
-    const events = [...monitor.update(rows), ...notices.update()];
+    const events = [...monitor.update(rows), ...notices.update(), ...permissions.update()];
     const unique = [...new Map(events.map(e => [e.eventId, e])).values()];
     watch(home, false); watch(path.join(home, 'sessions'), true); watch(logRoot, true);
+    if (permissions.root) watch(permissions.root, false);
     for (const {tail} of monitor.tails.values()) watch(tail.file, false);
     for (const file of notices.tails.keys()) watch(file, false);
-    const keep = new Set([home, path.join(home, 'sessions'), logRoot,
+    const keep = new Set([home, path.join(home, 'sessions'), logRoot, permissions.root,
       ...[...monitor.tails.values()].map(v => v.tail.file), ...notices.tails.keys()]);
     for (const [file, watcher] of watchers) if (!keep.has(file)) {watcher.close(); watchers.delete(file);}
     send({events:unique, sessionCount:rows.length, error:indexError,

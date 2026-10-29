@@ -246,8 +246,58 @@ below; they do not have universal conversation coverage.
 - Local Codex completion detection remains a fallback for the latest twelve
   interactive sessions. It requires a start then a matching successful explicit
   completion; cancelled, failed, historical and internal-agent turns are ignored.
+  These local sessions also provide question reminders when an explicitly observed
+  `request_user_input_async` call returns `accepted: true` during the current turn.
+  Calls alone, failed/unavailable tools and historical questions do not trigger
+  reminders. Only call metadata and the acceptance flag are used; question text
+  and answers are not forwarded. This fallback works independently of native
+  notification delivery, but does not cover ChatGPT Work sessions without a local
+  rollout or other interaction tools without a verified acceptance format.
   Both inputs react to filesystem changes with a 30-second reconciliation fallback
   instead of a fixed three-second scan. Startup baselines skip existing content.
+
+#### Optional approval hooks
+
+Approval prompts can be absent from native notification logs, including explicit
+`request_permissions` requests. An optional, user-reviewed Codex hook connection
+can deliver those events independently of native notification settings:
+
+- `PermissionRequest` observes actual command/file/MCP approval requests.
+- `PreToolUse` matches only `request_permissions` (including its namespace alias)
+  to cover that dedicated permission tool and nested code-mode invocations.
+- The bundled `Backend/runtime/permission-hook.mjs` accepts hook input on stdin,
+  discards tool arguments, and atomically writes only thread id, hashed event id,
+  category and timestamp into the pet's private `permission-events` directory.
+  It returns no hook decision or model-visible output. Errors never authorize,
+  deny or interrupt an action. Existing permission alert switches, tone, volume
+  and popup behavior apply to these events.
+- The pet watches that directory; startup history, invalid records and symlink
+  escapes are ignored. No additional periodic scanner is started.
+
+This connection is disabled until the user installs and trusts the matching hook
+definitions. GPT Niang does not modify Codex config or hook trust automatically.
+Use absolute paths for both Node and the installed script (Finder's PATH may not
+contain Node). Review the generated hook preview before merging into an existing
+`~/.codex/hooks.json`; preserve other hooks. Codex requires review/trust of the exact
+definitions. Disabling/removing the two entries stops this connection without
+changing the pet's other monitoring paths.
+
+The upstream hook contract is documented at <https://learn.chatgpt.com/docs/hooks>.
+Coverage is limited to supported local hook paths. Remote ChatGPT Work and normal
+ChatGPT chats need separate real-event acceptance. A dedicated permission-tool
+hook signals the request's invocation; it does not establish that a human must
+approve it if the host or another trusted hook decides automatically. The final
+code-to-host permission-prompt delivery requires enabling and trusting these hooks
+and performing a real approval test on the installed host version. A local macOS
+test verified a dedicated permission request with the hooks installed and trusted;
+this does not guarantee delivery on other host versions or for remote sessions.
+
+Ordinary Chat mode in the same desktop application currently has no verified
+independent event source. Disabling the host's notifications must not be assumed
+to preserve normal Chat completion or question reminders. No five-second Chat
+polling option is implemented: the tested standalone state-query client was
+rejected by the host's code-signing check. Idle time, connection changes and
+generic message updates are not treated as successful completion events.
 - Completion bubbles may queue for two minutes while hidden/busy. Requests are
   not queued while hidden/busy, to avoid replaying a request after it was answered.
   Background popups remain nonactivating, mouse-transparent and six seconds long.

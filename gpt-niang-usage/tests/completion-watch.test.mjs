@@ -7,6 +7,44 @@ import {CompletionEvents, CompletionMonitor} from '../runtime/completion-watch.m
 import {RolloutCounters, readRecentThreads} from '../runtime/thread-speed.mjs';
 import {quotaPresenceActive} from '../runtime/worker-state.mjs';
 const event=(type,at=1000,turn_id='turn1')=>({type:'event_msg',timestamp:new Date(at).toISOString(),payload:{type,turn_id,privateText:'never emit'}});
+const question=(at=2000,id='call-q',name='request_user_input_async')=>({type:'response_item',timestamp:new Date(at).toISOString(),payload:{type:'function_call',name,call_id:id,arguments:'private question and options'}});
+const accepted=(at=2100,id='call-q',output='{"accepted":true}')=>({type:'response_item',timestamp:new Date(at).toISOString(),payload:{type:'function_call_output',call_id:id,output}});
+
+test('accepted local interactive questions emit once before completion without forwarding question content',()=>{
+  const events=new CompletionEvents('thread');events.accept(event('task_started'));
+  events.accept(question());assert.deepEqual(events.drain(),[]);
+  events.accept(accepted());events.accept(question());events.accept(accepted());
+  const alerts=events.drain();assert.equal(alerts.length,1);
+  assert.equal(alerts[0].kind,'question');assert.equal(alerts[0].threadId,'thread');assert.equal(alerts[0].at,2100);
+  assert.equal(JSON.stringify(alerts).includes('private'),false);
+  assert.equal(JSON.stringify(alerts).includes('call-q'),false);
+  events.accept(event('task_complete',3000));assert.deepEqual(events.drain(),[{threadId:'thread',eventId:'thread:turn1',at:3000}]);
+});
+
+test('question calls without a live start or explicit acceptance never announce a question',()=>{
+  const events=new CompletionEvents('thread');
+  events.accept(question());events.accept(accepted());assert.deepEqual(events.drain(),[]);
+  events.accept(event('task_started'));
+  for(const output of ['{"accepted":false}','{"error":"not available"}','not json','{"accepted":"true"}']) {
+    events.accept(question());events.accept(accepted(2100,'call-q',output));assert.deepEqual(events.drain(),[]);
+  }
+  events.accept(question(2200,'other','some_other_tool'));events.accept(accepted(2300,'other'));assert.deepEqual(events.drain(),[]);
+  events.accept(question(2400,'cancelled'));events.accept(event('turn_aborted',2500));events.accept(accepted(2600,'cancelled'));assert.deepEqual(events.drain(),[]);
+  events.accept(event('task_started',3000,'two'));
+  events.accept(question(3100,'new','functions.request_user_input_async'));events.accept(accepted(3200,'new'));assert.equal(events.drain()[0]?.kind,'question');
+});
+
+test('local question writes are incremental, historical questions and truncated pending calls are ignored',t=>{
+  const {home,file,row,append}=fixture(t);
+  append(event('task_started'),question(),accepted());
+  const monitor=new CompletionMonitor(home,0);assert.deepEqual(monitor.update([row]),[]);
+  append(event('task_started',3000));monitor.update([row]);
+  const record=JSON.stringify(question(4000));fs.appendFileSync(file,record.slice(0,30));assert.deepEqual(monitor.update([row]),[]);
+  fs.appendFileSync(file,record.slice(30)+'\n');append(accepted(4100));
+  assert.equal(monitor.update([row])[0]?.kind,'question');assert.deepEqual(monitor.update([row]),[]);
+  append(question(4200,'pending'));monitor.update([row]);fs.writeFileSync(file,'');monitor.update([row]);
+  append(accepted(4300,'pending'));assert.deepEqual(monitor.update([row]),[]);
+});
 
 test('only a matching explicit complete after a start emits metadata, never a cancellation or idle gap',()=>{
   const events=new CompletionEvents('thread');
@@ -131,10 +169,15 @@ test('the real helper reads a read-only SQLite fixture, emits new completions an
   const lines=createInterface({input:child.stdout});
   const iterator=lines[Symbol.asyncIterator]();
   const first=JSON.parse((await iterator.next()).value);assert.deepEqual(first,{events:[],sessionCount:1,error:null,notificationLogAvailable:false});
-  const at=Date.now();append(event('task_started',at),event('task_complete',at+1));
+  const at=Date.now();append(event('task_started',at),question(at+1),accepted(at+2));
   let next;
   do { next=JSON.parse((await iterator.next()).value); } while (!next.events.length);
+  assert.equal(next.events[0].kind,'question');assert.ok(Date.now()-at<5000,'question arrives before completion without native notifications');
+  assert.equal(JSON.stringify(next).includes('private'),false);
+  append(event('task_complete',Date.now()));
+  do { next=JSON.parse((await iterator.next()).value); } while (!next.events.length);
   assert.equal(next.events.length,1);assert.equal(next.error,null);
+  assert.equal(next.events[0].eventId,'a:turn1');
   assert.equal(JSON.stringify(next).includes('private'),false);
   const closed=new Promise(resolve=>child.once('exit',resolve));child.stdin.end();
   assert.equal(await closed,0);lines.close();

@@ -35,7 +35,7 @@ export class RolloutCounters {
   }
 }
 export class RolloutTail {
-  constructor(file, {onRecord = null, liveOnly = false} = {}) { this.file = file; this.offset = 0; this.pending = ''; this.counters = new RolloutCounters(); this.identity = null; this.onRecord = onRecord; this.liveOnly = liveOnly; this.onReset = null; }
+  constructor(file, {onRecord = null, liveOnly = false, includeToolCalls = false} = {}) { this.file = file; this.offset = 0; this.pending = ''; this.counters = new RolloutCounters(); this.identity = null; this.onRecord = onRecord; this.liveOnly = liveOnly; this.includeToolCalls = includeToolCalls; this.onReset = null; }
   update() {
     const stat = fs.statSync(this.file);
     if (stat.ino !== this.identity || stat.size < this.offset) {
@@ -63,7 +63,9 @@ export class RolloutTail {
     if (this.pending.length > 1024 * 1024) { this.pending = ''; this.skipFirst = true; this.onReset?.(); }
     if (this.skipFirst && lines.length) { lines.shift(); this.skipFirst = false; }
     for (const line of lines) {
-      if (!line.includes('"event_msg"')) continue;
+      // The speed panel keeps its event-only protocol. The alert reader may
+      // opt into explicit tool calls/results, never chat-message records.
+      if (!line.includes('"event_msg"') && !(this.includeToolCalls && line.includes('"response_item"') && line.includes('"function_call'))) continue;
       try { const record = JSON.parse(line); this.counters.accept(record); this.onRecord?.(record); } catch {}
     }
     return this.counters;
