@@ -14,7 +14,8 @@ function Wait-TestWorker([int]$ExpectedPid){
     }catch{}
     Start-Sleep -Milliseconds 50
   }while([DateTime]::UtcNow-lt $deadline)
-  throw 'Dummy worker did not publish its heartbeat.'
+  $exited=if($script:worker){try{$script:worker.HasExited}catch{$true}}else{$true}
+  throw ('Dummy worker did not publish its heartbeat for PID '+$ExpectedPid+' (exited='+$exited+').')
 }
 
 # Load only lifecycle functions; never create the real WPF UI or read its config.
@@ -52,11 +53,11 @@ const owner={pid:process.pid,parentPid:Number(process.argv[3]),token:randomUUID(
 fs.writeFileSync(path.join(config.dataDir,'worker.lock'),JSON.stringify(owner));
 function heartbeat(){
   const file=path.join(config.dataDir,'worker-status.json'),temp=file+'.'+process.pid+'.tmp';
-  fs.writeFileSync(temp,JSON.stringify({...owner,at:Date.now()}));
-  fs.renameSync(temp,file);
+  try{fs.writeFileSync(temp,JSON.stringify({...owner,at:Date.now()}));fs.renameSync(temp,file);}
+  catch{try{fs.unlinkSync(temp);}catch{}}
 }
 heartbeat();
-setInterval(heartbeat,100);
+setInterval(()=>{if(!fs.existsSync(path.join(config.dataDir,'pause-heartbeat.flag')))heartbeat();},100);
 '@
   [IO.File]::WriteAllText((Join-Path $runtimeDir 'watch.mjs'),$dummy,[Text.UTF8Encoding]::new($false))
   $script:mutex=[Threading.Mutex]::new($true,$mutexName)
@@ -74,6 +75,37 @@ setInterval(heartbeat,100);
   $script:lastWorkerProbe=0
   Ensure-QuotaWorker ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
   Assert-Lifecycle ($script:worker.Id-eq $firstPid) 'A healthy worker was duplicated.'
+
+  # Tick-Widget captures its time before Ensure-QuotaWorker reads the heartbeat.
+  # A later, valid heartbeat must not be mistaken for a future/stale worker.
+  $tickBeforeHeartbeat=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+  $deadline=[DateTime]::UtcNow.AddSeconds(3)
+  do{
+    $health=Wait-TestWorker $firstPid
+    if([long]$health.at-gt $tickBeforeHeartbeat){break}
+    Start-Sleep -Milliseconds 25
+  }while([DateTime]::UtcNow-lt $deadline)
+  if([long]$health.at-le $tickBeforeHeartbeat){throw 'Dummy worker did not publish a newer heartbeat.'}
+  $script:lastWorkerProbe=0;$script:lastWorkerStart=$tickBeforeHeartbeat-11000
+  Ensure-QuotaWorker $tickBeforeHeartbeat
+  Assert-Lifecycle ($script:worker.Id-eq $firstPid -and !$script:worker.HasExited) 'A heartbeat newer than the tick caused a healthy worker restart.'
+
+  # Truly stale or future-dated records must still trigger recovery.
+  foreach($offset in @(-6000,60000)){
+    $pauseFile=Join-Path $script:dataDir 'pause-heartbeat.flag'
+    [IO.File]::WriteAllText($pauseFile,'pause')
+    Start-Sleep -Milliseconds 350
+    $health=Wait-TestWorker $firstPid
+    $health.at=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()+$offset
+    [IO.File]::WriteAllText((Join-Path $script:dataDir 'worker-status.json'),($health|ConvertTo-Json -Compress))
+    $probe=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $script:lastWorkerProbe=0;$script:lastWorkerStart=$probe-11000
+    Ensure-QuotaWorker $probe
+    Assert-Lifecycle ($script:worker -and $script:worker.Id-ne $firstPid) 'An invalid heartbeat did not trigger worker recovery.'
+    $firstPid=$script:worker.Id
+    [IO.File]::Delete($pauseFile)
+    $null=Wait-TestWorker $firstPid
+  }
 
   $script:worker.Kill()
   $null=$script:worker.WaitForExit(2000)

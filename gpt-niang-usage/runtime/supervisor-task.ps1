@@ -35,6 +35,16 @@ function Read-WidgetSupervisorBinding {
   throw 'Stable launcher binding.json is missing and the original installation.json could not verify this installation. Restore the original installation record before reinstalling.'
 }
 
+function Get-WidgetAgentPowerShellArguments([string]$AgentDir){
+  $scriptFile=Join-Path ([IO.Path]::GetFullPath($AgentDir)) 'update-agent.ps1'
+  return ('-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "'+$scriptFile+'" -Supervisor')
+}
+function Get-WidgetAgentLegacyEncodedArguments([string]$AgentDir){
+  $scriptFile=Join-Path ([IO.Path]::GetFullPath($AgentDir)) 'update-agent.ps1'
+  $command="& '"+$scriptFile.Replace("'","''")+"' -Supervisor"
+  $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+  return ('-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand '+$encoded)
+}
 function Test-WidgetStartupShortcutIdentity {
   param([Parameter(Mandatory=$true)]$Shortcut,[Parameter(Mandatory=$true)][string]$AppDir)
   $expectedExecute=Join-Path $env:WINDIR 'System32\wscript.exe'
@@ -47,7 +57,16 @@ function Test-WidgetStartupShortcutIdentity {
       $argumentsMatch=$binding.sid-eq [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -and [IO.Path]::GetFullPath($binding.appDir)-ieq [IO.Path]::GetFullPath($AppDir)
     }catch{$argumentsMatch=$false}
   }
-  return [bool]($Shortcut.TargetPath -and [IO.Path]::GetFullPath([string]$Shortcut.TargetPath)-ieq $expectedExecute -and $argumentsMatch)
+  $old=[bool]($Shortcut.TargetPath -and [IO.Path]::GetFullPath([string]$Shortcut.TargetPath)-ieq $expectedExecute -and $argumentsMatch)
+  if($old){return $true}
+  $powerShell=Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  if($Shortcut.TargetPath-and [IO.Path]::GetFullPath([string]$Shortcut.TargetPath)-ieq $powerShell-and ([string]$Shortcut.Arguments-ceq (Get-WidgetAgentPowerShellArguments $stable)-or [string]$Shortcut.Arguments-ceq (Get-WidgetAgentLegacyEncodedArguments $stable))){
+    try{
+      $binding=Read-WidgetSupervisorBinding -AppDir $AppDir -AgentDir $stable
+      return [bool]($binding.sid-eq [Security.Principal.WindowsIdentity]::GetCurrent().User.Value-and [IO.Path]::GetFullPath($binding.appDir)-ieq [IO.Path]::GetFullPath($AppDir))
+    }catch{return $false}
+  }
+  return $false
 }
 
 function Stop-WidgetGui {
@@ -107,7 +126,7 @@ function Get-WidgetSupervisorInfo {
   $agent=if(Get-Command Get-WidgetUpdateAgentDir -ErrorAction SilentlyContinue){Get-WidgetUpdateAgentDir}else{Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'GPTNiangUsage\update-agent'}
   if($config.updateAgent -and [IO.Path]::GetFullPath($config.updateAgent)-ine $agent){throw 'Stable launcher path mismatch.'}
   $stable=[bool]$config.updateAgent
-  [pscustomobject]@{AppDir=$root;DataDir=$data;Sid=$sid;TaskName=('GPT Niang Usage - '+$sid);TaskPath='\';Execute=(Join-Path $env:WINDIR 'System32\wscript.exe');Arguments=$(if($stable){'"'+(Join-Path $agent 'agent-supervisor.vbs')+'"'}else{'"'+(Join-Path $root 'supervisor.vbs')+'"'});WorkingDirectory=$(if($stable){$agent}else{$root});AgentDir=$agent}
+  [pscustomobject]@{AppDir=$root;DataDir=$data;Sid=$sid;TaskName=('GPT Niang Usage - '+$sid);TaskPath='\';Execute=$(if($stable){Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'}else{Join-Path $env:WINDIR 'System32\wscript.exe'});Arguments=$(if($stable){Get-WidgetAgentPowerShellArguments $agent}else{'"'+(Join-Path $root 'supervisor.vbs')+'"'});WorkingDirectory=$(if($stable){Join-Path $env:WINDIR 'System32'}else{$root});AgentDir=$agent}
 }
 
 function Resolve-WidgetSupervisorSid([string]$Identity){
@@ -124,13 +143,16 @@ function Assert-WidgetSupervisorTaskIdentity {
   if($actions.Count-ne 1){throw 'Supervisor task action count mismatch.'}
   $action=$actions[0]
   $legacyArguments='"'+(Join-Path $Info.AppDir 'supervisor.vbs')+'"'
-  $legacy=[string]$action.Arguments-ieq $legacyArguments -and [IO.Path]::GetFullPath([string]$action.WorkingDirectory).TrimEnd('\')-ieq $Info.AppDir
-  $current=[string]$action.Arguments-ieq $Info.Arguments -and [IO.Path]::GetFullPath([string]$action.WorkingDirectory).TrimEnd('\')-ieq $Info.WorkingDirectory
-  if($current -and $Info.WorkingDirectory-ine $Info.AppDir){
+  $wscript=Join-Path $env:WINDIR 'System32\wscript.exe'
+  $legacy=[IO.Path]::GetFullPath([string]$action.Execute)-ieq $wscript -and [string]$action.Arguments-ieq $legacyArguments -and [IO.Path]::GetFullPath([string]$action.WorkingDirectory).TrimEnd('\')-ieq $Info.AppDir
+  $stableVbs=[IO.Path]::GetFullPath([string]$action.Execute)-ieq $wscript -and [string]$action.Arguments-ieq ('"'+(Join-Path $Info.AgentDir 'agent-supervisor.vbs')+'"') -and [IO.Path]::GetFullPath([string]$action.WorkingDirectory).TrimEnd('\')-ieq $Info.AgentDir
+  $legacyEncoded=[IO.Path]::GetFullPath([string]$action.Execute)-ieq $Info.Execute -and [string]$action.Arguments-ceq (Get-WidgetAgentLegacyEncodedArguments $Info.AgentDir) -and [IO.Path]::GetFullPath([string]$action.WorkingDirectory).TrimEnd('\')-in @($Info.WorkingDirectory,$Info.AgentDir)
+  $current=[IO.Path]::GetFullPath([string]$action.Execute)-ieq $Info.Execute -and [string]$action.Arguments-ceq $Info.Arguments -and [IO.Path]::GetFullPath([string]$action.WorkingDirectory).TrimEnd('\')-ieq $Info.WorkingDirectory
+  if(($current-or $stableVbs-or $legacyEncoded) -and $Info.WorkingDirectory-ine $Info.AppDir){
     $binding=Read-WidgetSupervisorBinding -AppDir $Info.AppDir -AgentDir $Info.AgentDir
     if($binding.sid-ne $Info.Sid -or [IO.Path]::GetFullPath($binding.appDir)-ine $Info.AppDir -or [IO.Path]::GetFullPath($binding.dataDir)-ine $Info.DataDir){throw 'Stable task binding mismatch.'}
   }
-  if([IO.Path]::GetFullPath([string]$action.Execute)-ine $Info.Execute -or !($legacy -or $current)){throw 'Supervisor task action path mismatch.'}
+  if(!($legacy -or $stableVbs -or $legacyEncoded -or $current)){throw 'Supervisor task action path mismatch.'}
 }
 
 function Get-WidgetSupervisorTask {
@@ -190,7 +212,7 @@ function New-WidgetSupervisorTaskDefinition {
   $action=New-ScheduledTaskAction -Execute $Info.Execute -Argument $Info.Arguments -WorkingDirectory $Info.WorkingDirectory
   $principal=New-ScheduledTaskPrincipal -UserId $Info.Sid -LogonType Interactive -RunLevel Limited
   $trigger=New-ScheduledTaskTrigger -AtLogOn -User $Info.Sid
-  $settings=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -Hidden
+  $settings=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable -Hidden -RestartCount 3 -RestartInterval ([TimeSpan]::FromMinutes(1))
   New-ScheduledTask -Action $action -Principal $principal -Trigger $trigger -Settings $settings -Description 'Keep the local GPT Niang widget attached to the current user Codex main window.'
 }
 
@@ -204,7 +226,7 @@ function Register-WidgetSupervisorTask {
   $currentAction=if($existing){@($existing.Actions)[0]}else{$null}
   # An unchanged stable entry survives program replacement. Replacing the running
   # recovery task's definition can terminate its own instance on Windows.
-  if(!$currentAction -or [string]$currentAction.Arguments-ine $info.Arguments -or [IO.Path]::GetFullPath($currentAction.WorkingDirectory).TrimEnd('\')-ine $info.WorkingDirectory){
+  if(!$currentAction -or [IO.Path]::GetFullPath([string]$currentAction.Execute)-ine $info.Execute -or [string]$currentAction.Arguments-cne $info.Arguments -or [IO.Path]::GetFullPath($currentAction.WorkingDirectory).TrimEnd('\')-ine $info.WorkingDirectory){
     $definition=New-WidgetSupervisorTaskDefinition $info
     Register-ScheduledTask -TaskName $info.TaskName -TaskPath $info.TaskPath -InputObject $definition -Force -ErrorAction Stop|Out-Null
   }
@@ -231,13 +253,14 @@ function Stop-WidgetSupervisorTask {
   # Task state alone does not prove its child PowerShell has exited.
   $expectedScript='"'+(Join-Path $info.AppDir 'runtime\supervisor.ps1')+'"'
   $stableScript='"'+(Join-Path $info.AgentDir 'update-agent.ps1')+'"'
+  $legacyEncodedArguments=Get-WidgetAgentLegacyEncodedArguments $info.AgentDir
   $self=$null
   if($info.WorkingDirectory-ine $info.AppDir){$self=Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID) -ErrorAction Stop}
   # Logon recovery runs inside the scheduled entry before its supervisor loop.
   # It must not terminate its own task while re-registering the recovered plugin.
-  $recoveringEntry=$self -and [string]$self.CommandLine -and $self.CommandLine.IndexOf($stableScript,[StringComparison]::OrdinalIgnoreCase)-ge 0 -and $self.CommandLine-match '\s-Supervisor(?:\s|$)'
+  $recoveringEntry=$self -and [string]$self.CommandLine -and (($self.CommandLine.IndexOf($stableScript,[StringComparison]::OrdinalIgnoreCase)-ge 0 -and $self.CommandLine-match '\s-Supervisor(?:\s|$)') -or $self.CommandLine.IndexOf($info.Arguments,[StringComparison]::Ordinal)-ge 0-or $self.CommandLine.IndexOf($legacyEncodedArguments,[StringComparison]::Ordinal)-ge 0)
   $processes=@(Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction Stop|Where-Object{
-    $_.ProcessId-ne $PID -and [string]$_.CommandLine -and ($_.CommandLine.IndexOf($expectedScript,[StringComparison]::OrdinalIgnoreCase)-ge 0 -or ($info.WorkingDirectory-ine $info.AppDir -and $_.CommandLine.IndexOf($stableScript,[StringComparison]::OrdinalIgnoreCase)-ge 0))
+    $_.ProcessId-ne $PID -and [string]$_.CommandLine -and ($_.CommandLine.IndexOf($expectedScript,[StringComparison]::OrdinalIgnoreCase)-ge 0 -or ($info.WorkingDirectory-ine $info.AppDir -and ($_.CommandLine.IndexOf($stableScript,[StringComparison]::OrdinalIgnoreCase)-ge 0 -or $_.CommandLine.IndexOf($info.Arguments,[StringComparison]::Ordinal)-ge 0-or $_.CommandLine.IndexOf($legacyEncodedArguments,[StringComparison]::Ordinal)-ge 0)))
   })
   $null=New-Item -ItemType Directory -Path $info.DataDir -Force
   [IO.File]::WriteAllText((Join-Path $info.DataDir 'supervisor-stop.flag'),'stop')

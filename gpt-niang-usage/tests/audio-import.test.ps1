@@ -29,15 +29,25 @@ try{
     $a=$script:gptNiangAudio
     Assert-Audio ($a.Press -and !$a.Release -and $a.Preferences.mode-eq 'custom') 'Single press import did not leave release silent'
     Assert-Audio ((Get-WidgetFileHash (Join-Path $sources 'eight.wav'))-eq $originalHash) 'Import changed the source'
+    $sounds=Join-Path $data 'sounds'
+    $oldPress=Join-Path $sounds $a.Preferences.press.file
+    $personalWave=Join-Path $sounds 'personal.wav'
+    $unknownCache=Join-Path $sounds '00000000000000000000000000000001.wav'
+    [IO.File]::WriteAllBytes($personalWave,[byte[]]@(1,2,3))
+    [IO.File]::WriteAllBytes($unknownCache,[byte[]]@(4,5,6))
     Play-WidgetPressSound;Play-WidgetReleaseSound
     Assert-Audio (!$a.Timer.IsEnabled -and !$a.PendingRelease -and $a.ReleasePlayed) 'Press-only release started a timer'
     Assert-Audio (($a.Press-is [byte[]])) 'Press-only playback lost its player'
     Set-WidgetAudioVolume 0.51
     Assert-Audio ($a.Volume-eq 0.51 -and !$a.Release) 'Fractional volume failed with an empty slot'
     Clear-WidgetAudioSlot press
+    Assert-Audio ([IO.File]::Exists($oldPress)) 'The previous settings backup lost its custom sound'
+    Assert-Audio ([IO.File]::Exists($personalWave) -and [IO.File]::Exists($unknownCache)) 'Unrelated sound files were deleted during settings cleanup'
     Play-WidgetPressSound;Play-WidgetReleaseSound
     Assert-Audio (!$script:gptNiangAudio.Press -and !$script:gptNiangAudio.Release -and !$script:gptNiangAudio.Timer.IsEnabled) 'Double silence was replaced or started a timer'
     $null=Import-WidgetAudio release (Join-Path $sources 'float.wav')
+    Assert-Audio (![IO.File]::Exists($oldPress)) 'A known old sound cache remained after its settings backup was superseded'
+    Assert-Audio ([IO.File]::Exists($personalWave) -and [IO.File]::Exists($unknownCache)) 'Unrelated sound files were deleted after a later import'
     $a=$script:gptNiangAudio
     Play-WidgetPressSound;Play-WidgetReleaseSound
     Assert-Audio (!$a.Press -and $a.Release -and $a.ReleasePlayed -and !$a.PendingRelease -and !$a.Timer.IsEnabled) 'Release-only audio did not play immediately'
@@ -68,7 +78,12 @@ try{
     try{$null=Import-WidgetAudio press (Join-Path $sources 'silent.wav');throw 'Write failure unexpectedly succeeded'}catch{Assert-Audio ($_.Exception.Message.Contains('Simulated')) 'Unexpected write-failure reason'}
     Assert-Audio ([object]::ReferenceEquals($before,$script:gptNiangAudio) -and $saved-eq [IO.File]::ReadAllText((Join-Path $data 'audio-preferences.json'))) 'Write failure did not roll back both runtime and disk'
     ${function:Write-WidgetAudioPreferences}=$writer
-    $null=Import-WidgetAudio press (Join-Path $sources 'five.wav')
+    $cleanup=${function:Remove-WidgetUnusedAudioFiles}
+    function Remove-WidgetUnusedAudioFiles {throw 'Simulated cleanup failure'}
+    try{$null=Import-WidgetAudio press (Join-Path $sources 'five.wav')}
+    finally{${function:Remove-WidgetUnusedAudioFiles}=$cleanup}
+    Assert-Audio ([IO.File]::Exists((Get-WidgetCustomAudioPath $script:gptNiangAudio press))) 'Cleanup failure deleted the newly committed custom sound'
+    Assert-Audio ((Read-WidgetAudioPreferences $data).press.file-eq $script:gptNiangAudio.Preferences.press.file) 'Cleanup failure did not retain committed settings'
     Assert-Audio ($script:gptNiangAudio.Duration-eq 5) 'Exactly five seconds was rejected'
     $timer=[Diagnostics.Stopwatch]::StartNew();$null=Import-WidgetAudio release (Join-Path $sources 'high-rate.wav');$timer.Stop()
     Assert-Audio (($script:gptNiangAudio.Release-is [byte[]])) 'High-rate five-second stereo import did not preload'

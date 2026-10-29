@@ -25,17 +25,21 @@ function Stop-WidgetSupervisorTask {$script:stops++}
 function Stop-WidgetGui {$script:stops++}
 function Wait-WidgetUpdateIdle {}
 function Assert-WidgetCandidatePackage {}
+# Transaction fixtures never execute a real CLI. Executable capability discovery
+# is covered by install-cli-compatibility.test.ps1 and the isolated integration test.
+function Resolve-WidgetInstallCodex([string]$LocalData,[string[]]$Candidates){return 'isolated-codex'}
 function Assert-WidgetPluginRegistration([string]$Codex,[string]$Version){
+  if($Codex-ne 'isolated-codex'){throw 'Transaction fixture selected an external Codex CLI.'}
   $catalog=Read-WidgetUpdateJson (Join-Path $testRoot 'catalog.json')
   if($catalog.version-ne $Version -or !$catalog.installed -or !$catalog.enabled){throw 'Isolated plugin registration mismatch.'}
 }
 function Get-CimInstance {
-  return [pscustomobject]@{Name='powershell.exe';CommandLine=('powershell.exe -File "'+(Join-Path $script:agent 'update-agent.ps1')+'"')}
+  return [pscustomobject]@{Name='powershell.exe';CreationDate=$script:fixtureProcessStartedAt;CommandLine=('powershell.exe -File "'+(Join-Path $script:agent 'update-agent.ps1')+'"')}
 }
 $script:healthValidator=(Get-Command Wait-WidgetUpdatedHealth).ScriptBlock
 function Wait-WidgetUpdatedHealth($Journal) {
   if($script:failureMode-eq 'health'){throw 'Simulated new supervisor health failure.'}
-  & $script:healthValidator $Journal
+  & $script:healthValidator $Journal -TimeoutMilliseconds 500
 }
 function Invoke-WidgetUpdateInstaller($Journal,[string]$Token) {
   $script:installerCalls++
@@ -44,7 +48,8 @@ function Invoke-WidgetUpdateInstaller($Journal,[string]$Token) {
   $config=Read-WidgetUpdateJson (Join-Path $Journal.appDir 'installation.json');$config.version=$manifest.version
   Write-WidgetSupervisorJson (Join-Path $Journal.appDir 'installation.json') $config
   Write-WidgetSupervisorJson (Join-Path $testRoot 'catalog.json') @{version=$manifest.version;installed=$true;enabled=$true}
-  Write-WidgetSupervisorJson (Join-Path $Journal.dataDir 'supervisor-status.json') @{pid=$PID;at=[DateTime]::UtcNow.ToString('o')}
+  $script:fixtureProcessStartedAt=[DateTime]::UtcNow
+  Write-WidgetSupervisorJson (Join-Path $Journal.dataDir 'supervisor-status.json') @{pid=$PID;processStartedAt=$script:fixtureProcessStartedAt.ToString('o');at=[DateTime]::UtcNow.ToString('o');paused=$false;widgetRunning=$false;visibleWindows=$(if($script:failureMode-eq 'gui'){1}else{0})}
 }
 $checks=0
 function Assert($Condition,[string]$Label){if(!$Condition){throw ('Assertion failed: '+$Label)};$script:checks++;Write-Output ('PASS '+$Label)}
@@ -81,6 +86,11 @@ try {
   $hashFile=Join-Path $testRoot 'sha-test.txt';[IO.File]::WriteAllText($hashFile,'abc')
   Assert ((Get-WidgetFileHash $hashFile)-eq 'BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD') 'SHA256 works without Get-FileHash module autoload'
   $journal=New-Fixture 'upgrade'
+  $historicalNote=([string][char]0x672C+[char]0x673A+[char]0x4FEE+[char]0x8BA2+'-20261025.md')
+  foreach($name in @('.gitattributes',$historicalNote)){
+    [IO.File]::WriteAllText((Join-Path $journal.root $name),'unchanged shipped root file')
+    [IO.File]::WriteAllText((Join-Path $journal.candidate $name),'unchanged shipped root file')
+  }
   [IO.File]::WriteAllText((Join-Path $journal.root 'screenshot.png'),'personal screenshot')
   $personal=Join-Path $journal.root 'my downloads';$null=New-Item -ItemType Directory -Path $personal
   [IO.File]::WriteAllText((Join-Path $personal 'old-package.zip'),'manually downloaded archive')
@@ -93,12 +103,34 @@ try {
   Assert (!(Read-WidgetUpdateJson (Join-Path $journal.dataDir 'update-preferences.json')).automatic) 'disabled automatic-update preference preserved'
   Assert ([IO.File]::ReadAllText((Join-Path $journal.root 'screenshot.png'))-eq 'personal screenshot') 'unrelated screenshots remain at their original active path'
   Assert ([IO.File]::ReadAllText((Join-Path $journal.root 'my downloads\old-package.zip'))-eq 'manually downloaded archive') 'unmanaged download folders survive old-version cleanup'
+  foreach($name in @('.gitattributes',$historicalNote)){Assert ([IO.File]::ReadAllText((Join-Path $journal.root $name))-eq 'unchanged shipped root file') ('unchanged shipped root file is preserved: '+$name)}
 
   $journal=New-Fixture 'personal-collision'
   [IO.File]::WriteAllText((Join-Path $journal.root 'user.txt'),'personal file')
   [IO.File]::WriteAllText((Join-Path $journal.candidate 'user.txt'),'unexpected package file')
   Assert-Throws {Invoke-WidgetUpdateTransaction $journal $script:agent $journal.token} 'personal file collision blocks replacement'
   Assert ($script:stops-eq 0 -and [IO.File]::ReadAllText((Join-Path $journal.root 'user.txt'))-eq 'personal file') 'personal collision is rejected before shutdown and preserves the original'
+
+  $journal=New-Fixture 'modified-shared-root'
+  [IO.File]::WriteAllText((Join-Path $journal.root $historicalNote),'user modified the old file')
+  [IO.File]::WriteAllText((Join-Path $journal.candidate $historicalNote),'new package file')
+  Assert-Throws {Invoke-WidgetUpdateTransaction $journal $script:agent $journal.token} 'modified shipped root file blocks replacement'
+  Assert ($script:stops-eq 0 -and [IO.File]::ReadAllText((Join-Path $journal.root $historicalNote))-eq 'user modified the old file') 'modified shipped root file is preserved before shutdown'
+
+  $journal=New-Fixture 'shared-root-directory'
+  $null=New-Item -ItemType Directory -Path (Join-Path $journal.root '.gitattributes')
+  [IO.File]::WriteAllText((Join-Path $journal.candidate '.gitattributes'),'package file')
+  Assert-Throws {Invoke-WidgetUpdateTransaction $journal $script:agent $journal.token} 'directory with a shipped filename blocks replacement'
+  Assert ($script:stops-eq 0 -and (Test-Path -LiteralPath (Join-Path $journal.root '.gitattributes') -PathType Container)) 'same-name directory remains untouched'
+
+  $journal=New-Fixture 'shared-root-junction'
+  $outside=Join-Path $testRoot 'shared-root-outside';$null=New-Item -ItemType Directory -Path $outside
+  $linked=Join-Path $journal.root '.gitattributes';$null=New-Item -ItemType Junction -Path $linked -Target $outside
+  [IO.File]::WriteAllText((Join-Path $journal.candidate '.gitattributes'),'package file')
+  try{
+    Assert-Throws {Invoke-WidgetUpdateTransaction $journal $script:agent $journal.token} 'linked shipped filename blocks replacement'
+    Assert ($script:stops-eq 0 -and (Test-Path -LiteralPath $outside)) 'linked target remains untouched'
+  }finally{[IO.Directory]::Delete($linked)}
 
   $journal=New-Fixture 'committed-status';$script:failureMode='status'
   Invoke-WidgetUpdateTransaction $journal $script:agent $journal.token
@@ -128,6 +160,11 @@ try {
   $journal=New-Fixture 'failed-health';$script:failureMode='health'
   Assert-Throws {Invoke-WidgetUpdateTransaction $journal $script:agent $journal.token} 'backup is retained until the new supervisor passes health validation'
   Assert ($journal.phase-eq 'rolled-back' -and (Read-WidgetUpdateJson (Join-Path $journal.appDir 'installation.json')).version-eq '1.3.2') 'failed health validation restores the original version before cleanup'
+
+  $journal=New-Fixture 'failed-gui';$script:failureMode='gui'
+  Assert-Throws {Invoke-WidgetUpdateTransaction $journal $script:agent $journal.token} 'real health gate rejects a live supervisor whose visible widget never started'
+  Assert ($journal.phase-eq 'rolled-back' -and (Read-WidgetUpdateJson (Join-Path $journal.appDir 'installation.json')).version-eq '1.3.2') 'GUI startup failure restores the previous program before cleanup'
+  Assert ((Read-WidgetUpdateJson (Join-Path $journal.dataDir 'settings.json')).scale-eq 1.4) 'GUI failure rollback retains user preferences'
 
   $journal=New-Fixture 'interrupted-rename'
   Assert-WidgetUpdateTransaction $journal $script:agent

@@ -4,11 +4,14 @@ import Darwin
 @testable import GPTNiangMac
 
 final class WorkerRecoveryTests: XCTestCase {
-    @MainActor private func withFixture(initialStop: String? = nil, _ body: @MainActor (URL, WidgetModel, Int32, TimeInterval) async throws -> Void) async throws {
+    @MainActor private func withFixture(initialStop: String? = nil, initialUptime: TimeInterval? = nil, _ body: @MainActor (URL, WidgetModel, Int32, TimeInterval) async throws -> Void) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let manifest = root.appendingPathComponent("Backend/.codex-plugin/plugin.json")
         try FileManager.default.createDirectory(at: manifest.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data(#"{"version":"1.3.4"}"#.utf8).write(to: manifest)
+        // Recovery tests have no bundled audio. Keep model teardown independent
+        // of NSSound loading and the availability of a CI audio device.
+        try Data(#"{"version":1,"mode":"custom"}"#.utf8).write(to: root.appendingPathComponent("audio-preferences.json"))
         let executable = root.appendingPathComponent("node-fixture")
         let script = "#!/bin/sh\nprintf x >> \"$(dirname \"$0\")/attempts\"\nprintf '%s' \"$$\" > \"$(dirname \"$0\")/child-pid\"\nexec /bin/sleep 120\n"
         try Data(script.utf8).write(to: executable)
@@ -22,7 +25,7 @@ final class WorkerRecoveryTests: XCTestCase {
             if let previous { setenv("GPT_NIANG_NODE", previous, 1) } else { unsetenv("GPT_NIANG_NODE") }
             try? FileManager.default.removeItem(at: root)
         }
-        let now = ProcessInfo.processInfo.systemUptime
+        let now = initialUptime ?? ProcessInfo.processInfo.systemUptime
         model.tick(now: now)
         let pid = try await self.childPID(root)
         try await body(root, model, pid, now)
@@ -89,6 +92,31 @@ final class WorkerRecoveryTests: XCTestCase {
             for step in 12...21 { model.tick(now: now + Double(step)) }
             XCTAssertTrue(model.workerRunning)
             model.tick(now: now + 22); try await self.waitForExit(model)
+        }
+    }
+    @MainActor func testFractionalUptimeReachesTheRecoveryDeadline() async throws {
+        // Crossing 128 seconds makes (now + 12) - (now + 2) round below 10.
+        try await withFixture(initialUptime: 117.603463875) { root, model, pid, now in
+            try self.record(root, pid: pid); model.tick(now: now + 1)
+            try FileManager.default.removeItem(at: root.appendingPathComponent("worker-status.json"))
+            for step in 2...11 { model.tick(now: now + Double(step)) }
+            XCTAssertTrue(model.workerRunning)
+            model.tick(now: now + 12)
+            try await self.waitForExit(model)
+            XCTAssertFalse(model.workerRunning)
+        }
+    }
+    @MainActor func testFractionalUptimeReachesTheReplacementCooldownDeadline() async throws {
+        // The five-second cooldown crosses 256 seconds at this uptime.
+        try await withFixture(initialUptime: 224.69351787566157) { root, model, pid, now in
+            for step in 1...30 { model.tick(now: now + Double(step)) }
+            try await self.waitForExit(model)
+            model.tick(now: now + 34)
+            XCTAssertEqual(self.attempts(root), 1)
+            model.tick(now: now + 35)
+            _ = try await self.childPID(root, excluding: pid)
+            XCTAssertTrue(model.workerRunning)
+            XCTAssertEqual(self.attempts(root), 2)
         }
     }
     @MainActor func testStaleFutureMalformedAndWrongIdentityCannotResetOutage() async throws {

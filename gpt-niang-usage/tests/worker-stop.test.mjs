@@ -207,6 +207,9 @@ test('Mac private handoff finishes its query and replacement serves queued reque
     const resultFile = path.join(worker.dataDir, 'refresh-results', id + '.json'), resultDeadline = Date.now() + 6500;
     while (Date.now() < resultDeadline && !read(resultFile) && !result) await pause(20);
     assert.equal(read(resultFile)?.requestId, id);
+    // Publishing the durable result precedes removal of its queue entry.
+    // Observe both completions instead of assuming they are one atomic write.
+    while (Date.now() < resultDeadline && fs.existsSync(queued) && !result) await pause(20);
     assert.equal(fs.existsSync(queued), false);
     const replacementOwner = read(worker.ownerFile);
     assert.equal(replacementOwner.pid, child.pid);

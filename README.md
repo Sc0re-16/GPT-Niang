@@ -2,13 +2,27 @@
 
 让一只白发紫瞳的小龙娘，陪你看 Codex 的剩余额度。
 
-**Windows / macOS 桌面挂件 · 自动识别套餐与额度窗口 · 中文语录 · 当前正式版 1.3.5**
+**Windows / macOS 桌面挂件 · 自动识别套餐与额度窗口 · 中文语录 · 当前版本 1.3.6**
 
-1.3.5 同时发布 Windows 与 macOS 安装包：Windows 新增音乐律动、本地角色图库、自动语录，人物与气泡可分别缩放；双平台新增 WAV 音效导入与回答结束提醒；macOS 同步窗口跟随／边缘裁切、后台交接与更新就绪回退。两端功能差异见[下文](#windows-与-macos-功能差异135)。
+1.3.6 集中修复桌面显示、安装与启动恢复、后台心跳、macOS 恢复边界和额度读取超时，保留 1.3.5 的音乐律动、角色图库、语录、独立缩放、音效导入及回答结束提醒。Windows 与 macOS 安装包通过完整检查后共同发布，两端功能差异见[下文](#windows-与-macos-功能差异136)。
 
 [**下载最新版**](https://github.com/T7moris/GPT-Niang/releases/latest) · [Windows 安装](#windows-安装) · [macOS 安装](#macos-安装) · [更新记录](更新记录.md) · [反馈问题](https://github.com/T7moris/GPT-Niang/issues/new)
 
 <img src="gpt-niang-usage/assets/gpt-dragon-niang-bust.png" alt="无嘴巴的白发龙娘半身形象" width="240">
+
+## 1.3.6 稳定性修复
+
+- 更新验收会确认新监督器的身份，以及应当显示的挂件已经初始化；启动失败会回退。主窗口隐藏和用户主动暂停仍支持正常更新。
+- Windows 无界面额度查询会核对更新进程的创建时间，能够读取时可识别 PID 复用导致的旧标记；正常更新期间继续阻止额度 worker 启动。若系统拒绝读取进程创建时间，会保守地继续等待，避免与真实更新并发。
+- 完成提醒会回收已经消失的会话缓存：归档迁移保留 30 秒宽限，宽限内最多保留 256 项；最多保存 4096 个轻量续读记录，减少日志恢复后的重复提醒。仍存在的日志继续尾读，扫描频率保持每秒一次。
+- CLI 进程退出和输出读取共享同一超时，避免子进程持续占用输出管道时拖住安装或升级。
+- 升级时识别内容未变的两份已发布根目录文件，避免误报文件碰撞；文件被用户修改、同名目录或链接仍会阻止覆盖。
+- 更换自定义音效时，保留当前设置和上一份设置备份引用的声音；仅清理已被更早备份引用且不再使用的缓存，不扫描删除其他 WAV 文件。
+- Windows 读取后台进程心跳后再检查时间，避免读取过程中刚更新的心跳被误判并触发重启；每秒读取保持不变。
+- macOS 按恢复截止时间判断失联时长，避免浮点精度造成边界检查延迟；恢复仍只针对当前窗口启动的进程。
+- Codex 返回工作区发现超时时，尝试直接读取官方额度接口；仅在响应带有账户标识时显示新结果，并标注“账户待确认”。不保存该标识，也不沿用无法确认归属的旧快照。
+
+这些修复此前已在 1.3.5 本机修订中验证，现统一纳入 1.3.6；个人设置与语录在安装时核对保留。音效播放用静音样本测试；音乐律动的合成节拍测试通过，真实歌曲的节拍准确率与卡顿仍需复测。已打开聊天的插件连接需要重新加载后使用新代码。当失踪会话超过续读记录上限，或日志被截断重写且伴随时间异常时，提醒仍可能重复或遗漏。此结果不代表已完成新的 24 小时内存实机验收，macOS 原生界面与物理多屏未在本轮复测。早期候选的验收过程见[历史本机修订记录](本机修订-20261025.md)。
 
 ## 能做什么
 
@@ -36,18 +50,20 @@
 | Business | 个人额度优先，另显示最短时间窗口；其余窗口在详情中保留；个人额度不是公司总余额 |
 
 Mac 设置使用 SwiftUI，菜单、窗口与拖动使用 AppKit；没有运行 PowerShell、WPF 或 Windows 更新器。界面可选择跟随系统、简体中文或繁体中文，切换语言不会改写自定义语录。安装／登录启动入口、Windows MCP 插件和 Mac 聊天速度面板保持各平台现有支持范围。
-### Windows 与 macOS 功能差异（1.3.5）
+### Windows 与 macOS 功能差异（1.3.6）
 
-两个平台共享额度解析和自定义语录，但本版新增功能并非全部同时提供：
+macOS 角色图库、独立缩放、自动语录与音乐律动仍由 [PR #58](https://github.com/T7moris/GPT-Niang/pull/58) 独立评审；源码整合保存在 [集成候选分支](https://github.com/T7moris/GPT-Niang/tree/integration/local-repair-20261025)，未包含在 1.3.6 的 macOS 安装包中。
 
-| 功能 | Windows 1.3.5 | macOS 1.3.5 |
+两个平台共享额度解析和自定义语录，以下功能范围沿用 1.3.5：
+
+| 功能 | Windows 1.3.6 | macOS 1.3.6 |
 | --- | --- | --- |
-| 音乐律动 | ✅ 新增 | ❌ 本版未包含 |
-| 本地角色图库（导入／移除／撤销） | ✅ 新增 | ❌ 本版未包含 |
-| 人物与气泡分别缩放 | ✅ 新增 | ❌ 仅支持整体大小 |
-| 自动语录（1/5/15 分钟） | ✅ 新增 | ❌ 本版未包含 |
-| WAV 音效导入（按下／松开） | ✅ | ✅ 同步新增 |
-| 回答结束提醒 | ✅ | ✅ 同步新增 |
+| 音乐律动 | ✅ | ❌ 本版未包含 |
+| 本地角色图库（导入／移除／撤销） | ✅ | ❌ 本版未包含 |
+| 人物与气泡分别缩放 | ✅ | ❌ 仅支持整体大小 |
+| 自动语录（1/5/15 分钟） | ✅ | ❌ 本版未包含 |
+| WAV 音效导入（按下／松开） | ✅ | ✅ |
+| 回答结束提醒 | ✅ | ✅ |
 | 窗口跟随／边缘裁切／后台交接 | ✅ 原生 follower + 遮挡恢复 | ✅ 轮询 follower，实现不同、无 DWM cloak |
 | 聊天速度面板 | ❌ | ✅ macOS 独有 |
 | 界面语言（跟随系统／简中／繁中） | ❌ | ✅ macOS 独有 |
@@ -71,7 +87,7 @@ Mac 已安装应用也可执行（将应用路径替换为自己的安装位置�
 node /Applications/GPTNiangMac.app/Contents/Resources/Backend/runtime/detect-plan.mjs --json
 ```
 
-脚本通过同一套只读 `account/read` 与 `account/rateLimits/read` 自动读取套餐标识，优先使用额度桶中的 `planType`，未提供时使用账号返回的套餐；不读取或输出令牌、邮箱和聊天。切换套餐后下一次刷新会重新识别，套餐变化会使旧快照失效。API Key 登录、未登录、接口查询失败和成功但没有额度窗口会分别提示，成功但没有窗口不被当成网络错误。
+脚本通常通过只读 `account/read` 与 `account/rateLimits/read` 自动读取套餐标识，优先使用额度桶中的 `planType`，未提供时使用账号返回的套餐。若 Codex 返回工作区发现超时，会尝试直接读取额度接口；带账户标识的有效响应可显示新额度，并标注“账户待确认”，不沿用无法确认归属的旧快照。不读取或输出令牌与聊天，也不保存或输出邮箱和账户标识；账号指纹仅用于隔离快照。切换套餐后下一次刷新会重新识别，套餐变化会使旧快照失效。API Key 登录、未登录、接口查询失败和成功但没有额度窗口会分别提示，成功但没有窗口不被当成网络错误。
 
 [PR #8](https://github.com/T7moris/GPT-Niang/pull/8) 的 Go 实测表明原接口已经成功返回 30 天窗口，原后端的 `[300,10080]` 白名单和 Windows 固定按分钟数查找两行才是显示失败的原因。切换套餐可能改变 `planType`、窗口时长、窗口数量和重置时刻；额度读取方法仍是同一个。实际 HTTP／登录错误应根据返回错误单独检查，不能仅凭套餐名称判断。协议字段见 [OpenAI App Server 文档](https://learn.chatgpt.com/docs/app-server)。
 
@@ -81,12 +97,12 @@ node /Applications/GPTNiangMac.app/Contents/Resources/Backend/runtime/detect-pla
 
 在 [Release 下载页](https://github.com/T7moris/GPT-Niang/releases/latest) 的 **Assets** 中选择自己的系统：
 
-| 系统 | v1.3.5 安装包 | 安装入口 |
+| 系统 | v1.3.6 安装包 | 安装入口 |
 | --- | --- | --- |
-| Windows 10 / 11 | [gpt-niang-usage-widget-v1.3.5-windows.zip](https://github.com/T7moris/GPT-Niang/releases/download/v1.3.5/gpt-niang-usage-widget-v1.3.5-windows.zip) | 解压后运行 `安装GPT娘.cmd` |
-| macOS 13+，Apple Silicon / Intel | [gpt-niang-usage-widget-v1.3.5-macos-universal.zip](https://github.com/T7moris/GPT-Niang/releases/download/v1.3.5/gpt-niang-usage-widget-v1.3.5-macos-universal.zip) | 解压后打开 `GPTNiangMac.app` |
+| Windows 10 / 11 | [gpt-niang-usage-widget-v1.3.6-windows.zip](https://github.com/T7moris/GPT-Niang/releases/download/v1.3.6/gpt-niang-usage-widget-v1.3.6-windows.zip) | 解压后运行 `安装GPT娘.cmd` |
+| macOS 13+，Apple Silicon / Intel | [gpt-niang-usage-widget-v1.3.6-macos-universal.zip](https://github.com/T7moris/GPT-Niang/releases/download/v1.3.6/gpt-niang-usage-widget-v1.3.6-macos-universal.zip) | 解压后打开 `GPTNiangMac.app` |
 
-GitHub 自动附带的 **Source code** 和 **Code → Download ZIP** 是源码，不是上述安装包。Mac 下载包内已包含通用应用，不需要 Swift 或 Xcode；Intel 和较旧 macOS 的实际界面表现仍需真机验证。尚无 Linux 版本。两个平台的功能差异见[上文](#windows-与-macos-功能差异135)。
+GitHub 自动附带的 **Source code** 和 **Code → Download ZIP** 是源码，不是上述安装包。Mac 下载包内已包含通用应用，不需要 Swift 或 Xcode；Intel 和较旧 macOS 的实际界面表现仍需真机验证。尚无 Linux 版本。两个平台的功能差异见[上文](#windows-与-macos-功能差异136)。
 
 ### Windows 安装
 
@@ -98,7 +114,7 @@ GitHub 自动附带的 **Source code** 和 **Code → Download ZIP** 是源码�
 
 ### macOS 安装
 
-1. 下载 **v1.3.5** Mac ZIP，解压后把 **`GPTNiangMac.app`** 移入「应用程序」或其他准备长期保留的位置。
+1. 下载 **v1.3.6** Mac ZIP，解压后把 **`GPTNiangMac.app`** 移入「应用程序」或其他准备长期保留的位置。
 2. 打开应用，再打开 Codex 主窗口。Mac 不使用 `.cmd` 或 PowerShell 安装器。
 3. 右键角色打开原生菜单，从「设置」进入原生设置窗口，也可从悬停按钮或菜单栏进入。双击和连续点击角色与 Windows 一样执行普通点击，不再打开设置。需要登录启动时，再开启 **「登入 Mac 時自動開啟」**；系统可能要求在「登录项」中批准。
 4. 在菜单栏选择 **「聊天速度…」**，可打开独立的本地速度面板。
@@ -109,18 +125,18 @@ Mac 的位置跟随目标为 60 Hz，仍使用轮询，不能保证拖动时零�
 
 ### 安装包校验（建议）
 
-同一 [v1.3.5 Release](https://github.com/T7moris/GPT-Niang/releases/tag/v1.3.5) 的 **[SHA256SUMS.txt](https://github.com/T7moris/GPT-Niang/releases/download/v1.3.5/SHA256SUMS.txt)** 包含 Windows 与 macOS 两个包的校验值。下载后计算自己的安装包哈希，与文件中**同名文件**的一行比较。
+同一 [v1.3.6 Release](https://github.com/T7moris/GPT-Niang/releases/tag/v1.3.6) 的 **[SHA256SUMS.txt](https://github.com/T7moris/GPT-Niang/releases/download/v1.3.6/SHA256SUMS.txt)** 包含 Windows 与 macOS 两个包的校验值。下载后计算自己的安装包哈希，与文件中**同名文件**的一行比较。
 
 Windows，在 PowerShell 中运行：
 
 ```powershell
-Get-FileHash .\gpt-niang-usage-widget-v1.3.5-windows.zip -Algorithm SHA256
+Get-FileHash .\gpt-niang-usage-widget-v1.3.6-windows.zip -Algorithm SHA256
 ```
 
 macOS，在终端中进入下载目录后运行：
 
 ```sh
-shasum -a 256 gpt-niang-usage-widget-v1.3.5-macos-universal.zip
+shasum -a 256 gpt-niang-usage-widget-v1.3.6-macos-universal.zip
 ```
 
 十六进制字母大小写不影响比较。哈希不一致说明下载文件与 Release 校验值不一致，可能是下载损坏或内容被改动，请不要安装。请只从本仓库的 Release 页面下载；第三方加速镜像不能当作可信来源。
@@ -152,7 +168,7 @@ shasum -a 256 gpt-niang-usage-widget-v1.3.5-macos-universal.zip
 | Mac：右键菜单、悬停按钮或菜单栏进入设置 | 调整外观、显示模式、桌面置顶和登录启动；连续点击不打开设置 |
 | Mac：菜单选择「退出 GPT 娘」 | 退出应用和后台 helper；需重新打开 `.app` 才会再次显示 |
 
-Windows / macOS 1.3.5：右键角色，从原生菜单／设置进入「显示与位置」，选择「仅在 Codex 窗口内」或「整个桌面自由拖动」。桌面模式中挂件会在聊天窗口最小化或关闭后继续显示，并按默认间隔刷新额度；仅此模式显示「始终置顶」。切回窗口内立即取消桌面置顶，并隐藏该选项；桌面置顶偏好保留，默认关闭。两种模式分别保存位置，原有大小、声音与语录设置保留。「外观设置」统一调整大小与按钮显示，「声音与点击」调整音效、音量和点击行为。
+Windows / macOS 1.3.6：右键角色，从原生菜单／设置进入「显示与位置」，选择「仅在 Codex 窗口内」或「整个桌面自由拖动」。桌面模式中挂件会在聊天窗口最小化或关闭后继续显示，并按默认间隔刷新额度；仅此模式显示「始终置顶」。切回窗口内立即取消桌面置顶，并隐藏该选项；桌面置顶偏好保留，默认关闭。两种模式分别保存位置，原有大小、声音与语录设置保留。「外观设置」统一调整大小与按钮显示，「声音与点击」调整音效、音量和点击行为。
 
 Windows 启动时先检查 Codex 的输入或导航控件是否可用，连续两次确认主界面就绪后才显示挂件；加载画面中的原生窗口本身不会触发显示。已启动的桌面模式继续独立显示。
 
@@ -271,7 +287,7 @@ swift test --package-path macos
 codesign --verify --deep --strict dist/GPTNiangMac.app
 ```
 
-打包与发布流程见 `.github/workflows/release.yml`。两个平台测试、构建与校验都通过后，发布同一个 Release 和两个独立安装包；v1.3.5 由 Windows 本地构建 + macOS CI 构建组成，两端功能差异见[上文](#windows-与-macos-功能差异135)。
+打包与发布流程见 `.github/workflows/release.yml`。两个平台测试、构建与校验都通过后，发布同一个 Release 和两个独立安装包；v1.3.6 的两个安装包均由同一次 CI 发布流程构建，两端功能差异见[上文](#windows-与-macos-功能差异136)。
 
 Windows 界面使用 PowerShell / WPF，Mac 界面使用 SwiftUI / AppKit，额度查询使用共享 Node.js 后端。窗口识别与接口依赖当前 Codex 桌面端实现，后续客户端更新可能需要适配。实际拖动、多窗口切换及 Intel / 较旧 macOS 的界面行为仍需真机验证，CI 通过不等于完成所有桌面交互测试。
 
@@ -281,31 +297,39 @@ Windows 界面使用 PowerShell / WPF，Mac 界面使用 SwiftUI / AppKit，额�
 
 欢迎改进窗口兼容性、安装流程和可读性；改动后请运行相应平台的检查。角色为静态半身配合按压动画，不包含完整桌宠动作。
 
-源码中的 Windows 本地测试功能见 [图片更换与菜单说明](https://github.com/T7moris/GPT-Niang/blob/v1.3.5/docs/windows-character-menu.md)；1.3.5 已包含图片更换、独立大小与图库操作。
+源码中的 Windows 本地测试功能见 [图片更换与菜单说明](https://github.com/T7moris/GPT-Niang/blob/v1.3.6/docs/windows-character-menu.md)；1.3.6 保留图片更换、独立大小与图库操作。
 
 ## 致谢与许可
 
 以下按 GitHub 用户名排列，记录代码、方案、审查、问题复现与功能建议。感谢每一位参与者；已合并代码、待审方案和开放建议分别标明状态。
 
-状态核对日期：2026-10-12。后续进展见对应 PR／Issue。
+原 PR 状态记录日期：2026-10-25；本次稳定性整合日期：2026-10-29。原 PR 是否关闭与代码是否进入 1.3.6 分别记录；仍待硬件验收的项目继续标明限制。
 
 | 贡献者 | 具体贡献与关联 PR／Issue | 当前状态 |
 | --- | --- | --- |
 | [@Admilkk](https://github.com/Admilkk) | [PR #1](https://github.com/T7moris/GPT-Niang/pull/1)：动态额度展示、账号快照隔离、单实例刷新、进程恢复与安装／生命周期回归；[PR #16](https://github.com/T7moris/GPT-Niang/pull/16)：Windows 内置更新、校验、失败回滚和中断事务恢复，整合于 [PR #17](https://github.com/T7moris/GPT-Niang/pull/17)；[PR #20](https://github.com/T7moris/GPT-Niang/pull/20)：修复 Windows 拖动与定位时原生尺寸回写导致的持续放大，改为只移动窗口、由 WPF 管理尺寸，并补充窗口内／桌面模式及不同 DPI 的连续拖动回归；[PR #12 审查](https://github.com/T7moris/GPT-Niang/pull/12#pullrequestreview-5484203142)：指出个人额度的空分钟数会破坏 macOS 解码，并建议补充混合额度兼容测试。 | PR #1／#16／#20 已合并；PR #12 个人额度兼容审查已在 1.3.4 补齐 |
-| [@AkihiM](https://github.com/AkihiM) | [PR #34](https://github.com/T7moris/GPT-Niang/pull/34)：Windows 图片图库、导入与撤销、缺失／损坏回退，以及小数音量恢复与相关测试。 | 图片与小数音量部分正在本地整合；其他改动待讨论 |
+| [@AkihiM](https://github.com/AkihiM) | [PR #34](https://github.com/T7moris/GPT-Niang/pull/34)：Windows 图片图库、导入与撤销、缺失／损坏回退，以及小数音量恢复与相关测试。 | 相关图库与音量功能已在 Windows 1.3.5 提供；原 PR 仍开放，其余差异保持独立评审 |
+| [@Archetto-O](https://github.com/Archetto-O) | [PR #60](https://github.com/T7moris/GPT-Niang/pull/60)：额度跨档提醒与低额度红条；[PR #61](https://github.com/T7moris/GPT-Niang/pull/61)：精简发布包、手动启动版本及安装测试。 | 已审查范围与组合冲突，尚未合入 1.3.6；不计为已发布功能 |
+| [@Determination-X](https://github.com/Determination-X) | [Issue #40](https://github.com/T7moris/GPT-Niang/issues/40)：计划任务无法启动监督器的复现、错误码与单变量对照。 | 本版改用物理路径与直接 PowerShell 入口，独立 Startup 备援及真实升级恢复通过；真实注销／重登仍待观察 |
 | [@FusaishiHaruaki-afk](https://github.com/FusaishiHaruaki-afk) | [PR #8](https://github.com/T7moris/GPT-Niang/pull/8)：真实 Go 账号的 30 天窗口复现、后端／Mac 适配及可选 `GPT_NIANG_SDK` 构建参数；[PR #9](https://github.com/T7moris/GPT-Niang/pull/9)：按窗口自身时长分类，覆盖槽位互换、月度边界与未知时长，并提供 Go 回归及 Swift 标题验证；相关实现与回归由 [PR #10](https://github.com/T7moris/GPT-Niang/pull/10) 整合。 | PR #8／#9 已合并；当前标签沿用整合后的精确时长显示 |
 | [@gyb13451576](https://github.com/gyb13451576) | [Issue #11](https://github.com/T7moris/GPT-Niang/issues/11)：提供 v1.3.1 混合 DPI 双屏环境中重启 Codex 后窗口塌缩为 2×2 的复现、DPI 反馈循环分析、固定设计尺寸与 DIP／物理像素换算方案，以及自动测试和实际 HWND 采样验证；关联 [Issue #2](https://github.com/T7moris/GPT-Niang/issues/2)。 | 问题报告保持开放；PR #20 已合入拖动／定位的尺寸回写修复，重启后的 2×2 塌缩仍待验证 |
 | [@Ifinty](https://github.com/Ifinty) | [PR #28](https://github.com/T7moris/GPT-Niang/pull/28)：角色图片高质量缩放。 | 已纳入 Windows 本地测试 |
+| [@Jeffery910312](https://github.com/Jeffery910312) | [Issue #65](https://github.com/T7moris/GPT-Niang/issues/65)：桌面模式重启不显示与 PresentationSource 异常复现。 | 本版冷启动与隐藏恢复修复通过真实 WPF 回归 |
+| [@Jerry-FaGe](https://github.com/Jerry-FaGe) | [Issue #53](https://github.com/T7moris/GPT-Niang/issues/53)：旧 CLI 被优先选中；[Issue #54](https://github.com/T7moris/GPT-Niang/issues/54)：插件已注册而全量列表校验超时。 | 本版增加能力检查与候选回退，校验限定本地市场；可执行文件替身与真实隔离安装验证通过 |
+| [@Jiang-liran](https://github.com/Jiang-liran) | [PR #58](https://github.com/T7moris/GPT-Niang/pull/58)：Mac 图库、独立缩放、自动语录和音乐律动移植。 | 集成候选分支已组合源码；本版不包含该功能，Intel／Apple Silicon 与多屏实机验收待完成 |
 | [@insightlacyrina](https://github.com/insightlacyrina) | [Issue #14](https://github.com/T7moris/GPT-Niang/issues/14)：建议增加可持久化的「双击角色打开设置」开关，保留其他设置入口，并提出 macOS 简体中文界面建议；描述了连续点击被设置窗口打断的场景。 | 1.3.4 按维护者最新要求取消双击设置；简／繁体与跟随系统选择已实现 |
 | [@JCyxMio](https://github.com/JCyxMio) | [PR #12](https://github.com/T7moris/GPT-Niang/pull/12)：提出 Windows 多屏／混合 DPI 修复、Business `individualLimit` 个人额度显示，以及套餐标题、刷新按钮布局和命中修复；提供重复尺寸、额度解析及 WPF 验证。 | 方案整合于 1.3.4；DPI 定位以 PR #20 为准，并补齐 macOS 个人额度解码与显示 |
 | [@maolilup](https://github.com/maolilup) | [PR #13](https://github.com/T7moris/GPT-Niang/pull/13)：针对 [Issue #2](https://github.com/T7moris/GPT-Niang/issues/2)，提出使用固定设计宽高计算跟随／拖动尺寸以避免 DPI 尺寸漂移，并提供不同设计画布、缩放与目标 DPI 下的连续原生尺寸回归。 | 固定设计尺寸与回归已适配到 1.3.4；原生调用保持只移动 |
+| [@moonlight54321](https://github.com/moonlight54321) | [Issue #66](https://github.com/T7moris/GPT-Niang/issues/66)：桌面初始化时机分析及推迟定位补丁。 | 本版参考方案加入连接检查、显示后重放与回归 |
+| [@NoelCornel](https://github.com/NoelCornel) | [Issue #49](https://github.com/T7moris/GPT-Niang/issues/49)：长时大提交量的有界复现、额度刷新对照及修复建议。 | 正式版已包含额度选择修复；本版完整刷新 10,000 次稳定。24 小时采样已停止且样本不足，未完成长期验收 |
+| [@Rhodoeos](https://github.com/Rhodoeos) | [PR #63](https://github.com/T7moris/GPT-Niang/pull/63)：缩小宿主后的角色定位、完成提醒越界及负偏移保存；[PR #62](https://github.com/T7moris/GPT-Niang/pull/62)：可选角色主题色。 | #63 原提交已整合进本版并完成 Windows 回归；#62 保持独立评审，两者测试入口的合并冲突已记录 |
 | [@meaqua9420](https://github.com/meaqua9420) | [PR #3](https://github.com/T7moris/GPT-Niang/pull/3)：SwiftUI／AppKit 原生 macOS 挂件、原有气泡／动画／配色／音效移植、窗口跟随与原生点击设置、菜单栏和可选登录启动；新增只读本地聊天速度面板、Mac CLI 与 worker 锁支持、应用构建及双平台 CI。 | 已合并 |
 | [@ShiroasabaMio](https://github.com/ShiroasabaMio) | [Issue #2](https://github.com/T7moris/GPT-Niang/issues/2)：报告 v1.2.3 跨不同 DPI 显示器移动时挂件放大、跳动与错位，提供 120／144 DPI 复现、尺寸反馈循环分析、固定设计尺寸与统一 DPI 上下文建议及本机修复结果。 | 问题报告保持开放；PR #20 已合入拖动修复，跨屏场景继续验证，其他方案见 PR #12／#13 |
 | [@T7moris](https://github.com/T7moris) | 项目创作、维护、集成与发布。[PR #5](https://github.com/T7moris/GPT-Niang/pull/5)：Mac 跟随采样、限频与多窗口选择；[PR #6](https://github.com/T7moris/GPT-Niang/pull/6)：1.3.0 双平台安装包、版本与发布校验；[PR #7](https://github.com/T7moris/GPT-Niang/pull/7)：下载、安装、退出、迁移和卸载说明；[PR #10](https://github.com/T7moris/GPT-Niang/pull/10)：套餐自动识别与动态额度整合；[PR #17](https://github.com/T7moris/GPT-Niang/pull/17)：双平台内置更新、自动清理和 Mac 原生回退；[PR #18](https://github.com/T7moris/GPT-Niang/pull/18)：MIT 代码许可、素材使用边界及文档名称统一；[PR #21](https://github.com/T7moris/GPT-Niang/pull/21)：以 PR #20 为准整合 DPI、Business 个人额度、原生 Mac 交互与语言，补齐回归、旧偏好迁移和 1.3.4 双平台发布。 | 前述维护与整合 PR 已合并；PR #21 为 1.3.4 的统一整合 |
 | [@TheRuabit](https://github.com/TheRuabit) | [PR #4](https://github.com/T7moris/GPT-Niang/pull/4)：安装器直接按 UTF-8 解码插件列表 JSON，避免 Windows 默认编码造成中文安装路径乱码。 | 已合并 |
 | [@wzc20090621-gif](https://github.com/wzc20090621-gif) | [PR #15](https://github.com/T7moris/GPT-Niang/pull/15)：Windows 独立桌面模式、跨屏拖动和两种模式的位置保存，解除主窗口归属／裁切并支持桌面置顶；增加本机管道额度通信与文件队列回退，修复安装后的 Node／MCP 绝对路径配置。 | 已合并 |
 
-| [@ytzha](https://github.com/ytzha) | [PR #29](https://github.com/T7moris/GPT-Niang/pull/29)：改用系统 WAV 播放器，保留按下／松开顺序与音量缩放。 | 正在 Windows 本机测试；补充资源清理与连续点击检查 |
+| [@ytzha](https://github.com/ytzha) | [PR #29](https://github.com/T7moris/GPT-Niang/pull/29)：系统 WAV 播放方案；[PR #46](https://github.com/T7moris/GPT-Niang/pull/46)：像素动作、拟声及跨项目状态检测。 | 正式 1.3.5 已提供相关点击音效修复；两个原 PR 仍开放，扩展功能未整体合入本版 |
 
 本次完整致谢记录由 [@T7moris](https://github.com/T7moris) 在 [PR #19](https://github.com/T7moris/GPT-Niang/pull/19) 中补充。
 

@@ -47,6 +47,19 @@ final class AlertTests: XCTestCase {
         XCTAssertTrue(other.evaluate(sample(0, minutes: 43200), preferences: enabled, now: now).isEmpty)
         XCTAssertEqual(other.evaluate(sample(0, reset: nil), preferences: enabled, now: now).count, 1)
     }
+    func testDirectQuotaFallbackDoesNotAlertOrReplaceVerifiedAccountState() throws {
+        var state = QuotaAlertState(), prefs = enabled
+        prefs.shortResetEnabled = true
+        _ = state.evaluate(sample(15), preferences: prefs, now: now)
+        let before = state
+        let data = Data(#"{"ok":true,"queryOk":true,"observedAt":12000000,"accountKey":null,"accountVerified":false,"windows":[{"minutes":300,"remaining":0,"resetsAt":13000}]}"#.utf8)
+        let fallback = try JSONDecoder().decode(UsageSnapshot.self, from: data)
+        let later = Date(timeIntervalSince1970: 12000)
+        XCTAssertFalse(fallback.stale(at: later))
+        XCTAssertEqual(fallback.displayWindows.count, 1)
+        XCTAssertTrue(state.evaluate(fallback, preferences: prefs, now: later).isEmpty)
+        XCTAssertEqual(state, before)
+    }
     func testResetRolloverDoesNotDependOnObservingAFullBalance() {
         var state = QuotaAlertState()
         _ = state.evaluate(sample(0), preferences: enabled, now: now)

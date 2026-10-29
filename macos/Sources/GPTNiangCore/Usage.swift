@@ -71,10 +71,11 @@ public struct UsageSnapshot: Decodable {
     public let plan: String?
     public let planLabel: String?
     public let accountKey: String?
+    public let accountVerified: Bool?
 
-    public init(ok: Bool = false, queryOk: Bool? = false, observedAt: Double? = nil, windows: [QuotaWindow] = [], error: String? = nil, plan: String? = nil, planLabel: String? = nil, accountKey: String? = nil) {
+    public init(ok: Bool = false, queryOk: Bool? = false, observedAt: Double? = nil, windows: [QuotaWindow] = [], error: String? = nil, plan: String? = nil, planLabel: String? = nil, accountKey: String? = nil, accountVerified: Bool? = nil) {
         self.ok = ok; self.queryOk = queryOk; self.observedAt = observedAt; self.windows = windows; self.error = error
-        self.plan = plan; self.planLabel = planLabel; self.accountKey = accountKey
+        self.plan = plan; self.planLabel = planLabel; self.accountKey = accountKey; self.accountVerified = accountVerified
     }
     public var validWindows: [QuotaWindow] {
         var seen = Set<String>()

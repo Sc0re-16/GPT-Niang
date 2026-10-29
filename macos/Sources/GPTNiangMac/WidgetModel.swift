@@ -257,7 +257,9 @@ final class WidgetModel: ObservableObject {
         }
         if workerUnhealthySince == nil { workerUnhealthySince = now }
         let grace: TimeInterval = workerReportedHeartbeat ? 10 : 30
-        guard workerRecoveryAvailable, now - (workerUnhealthySince ?? now) >= grace else { return }
+        // Compare deadlines directly to avoid cancellation rounding just below
+        // the boundary when fractional uptime crosses a floating-point range.
+        guard workerRecoveryAvailable, now >= (workerUnhealthySince ?? now) + grace else { return }
         // Only the Process created by this GUI is signalled. Wait for its exit;
         // no foreign PID, lock removal or SIGKILL fallback is used.
         workerRecoveryPending = true; workerRecoveryAvailable = false
@@ -308,7 +310,7 @@ final class WidgetModel: ObservableObject {
               let status = try? workerRecord("worker-status.json"),
               let record = liveWorker(owner: owner, status: status, isAlive: { kill($0, 0) == 0 || errno == EPERM }),
               record.busy == false, freshWorker(record, now: Date()),
-              now - lastWorkerStart >= 5 else { return true }
+              now >= lastWorkerStart + 5 else { return true }
         guard let installed = StableVersion(backendVersion), record.handoffProtocol == nil || record.handoffProtocol == 1 else { return true }
         if let version = record.version {
             guard let previous = StableVersion(version), previous < installed else { return true }
@@ -348,7 +350,7 @@ final class WidgetModel: ObservableObject {
         }
         if waitForSharedWorker(now: now) { return }
         // Keep per-second state reads; only failed process starts receive a cooldown.
-        guard now - lastWorkerStart >= 5 else { return }
+        guard now >= lastWorkerStart + 5 else { return }
         lastWorkerStart = now
         worker = nil
         lastWorkerCheck = nil; workerUnhealthySince = nil; workerReportedHeartbeat = false

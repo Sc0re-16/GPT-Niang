@@ -28,7 +28,7 @@ function Set-WidgetAutomaticUpdate([bool]$Enabled) {
 }
 function Update-WidgetUpdateMenu {
   if(!$script:settingsMenuUi.UpdateVersion){return}
-  $script:settingsMenuUi.UpdateVersion.Header='当前版本：'+$script:config.version
+  $script:settingsMenuUi.UpdateVersion.Header='当前版本：'+$script:config.version+$(if($script:config.localBuild){' · 本机修订 '+$script:config.localBuild})
   $script:settingsMenuUi.AutoUpdate.IsChecked=$script:autoUpdate
   $state=Read-WidgetUpdateJson (Join-Path $script:dataDir 'update-status.json')
   $label=switch($state.phase){

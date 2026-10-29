@@ -22,6 +22,19 @@ public static class MusicDispatchProbe {
 }
 '@
 function Bounds([IntPtr]$Handle){$r=New-Object MusicDispatchProbe+Rect;[MusicDispatchProbe]::GetWindowRect($Handle,[ref]$r)|Out-Null;return $r}
+$script:coordinateWaits=@()
+function Wait-StableMusicBounds([IntPtr]$Handle,[int]$Left,[int]$Top){
+ $clock=[Diagnostics.Stopwatch]::StartNew();$stable=-1.0
+ while($clock.Elapsed.TotalMilliseconds-lt 2000){
+  $script:activation=[MusicDispatchProbe]::Pump(16)-or $script:activation
+  $r=Bounds $Handle
+  if([Math]::Abs($r.Left-$Left)-le 1-and [Math]::Abs($r.Top-$Top)-le 1){
+   if($stable-lt 0){$stable=$clock.Elapsed.TotalMilliseconds}
+   if($clock.Elapsed.TotalMilliseconds-$stable-ge 250){$script:coordinateWaits+=$clock.Elapsed.TotalMilliseconds;return}
+  }else{$stable=-1.0}
+ }
+ throw 'Native music coordinates did not settle at the expected position'
+}
 $window=$null;$hostWindow=$null;$follower=$null;$music=$null;$activation=$false
 try{
  $hostWindow=[Windows.Window]::new();$hostWindow.Width=1000;$hostWindow.Height=780;$hostWindow.Left=160;$hostWindow.Top=100
@@ -52,6 +65,7 @@ try{
  for($i=0;$i-lt 20;$i++){$request.Invoke($music,@())|Out-Null;if(![object]::ReferenceEquals($pending,$pendingField.GetValue($music))){throw 'Position requests were not coalesced'}}
  [MusicDispatchProbe]::SetWindowPos($hostHandle,[IntPtr]::Zero,($hostBounds.Left+80),($hostBounds.Top+60),0,0,0x215)|Out-Null
  $null=$follower.Synchronize();$activation=[MusicDispatchProbe]::Pump(80)-or $activation
+ Wait-StableMusicBounds $widgetHandle ($before.Left+130) ($before.Top+60)
  $after=Bounds $widgetHandle
  if([Math]::Abs($after.Left-$before.Left-130)-gt 1-or [Math]::Abs($after.Top-$before.Top-60)-gt 1){throw ('Queued move used a stale host frame: '+$before.Left+','+$before.Top+' -> '+$after.Left+','+$after.Top)}
  # A bubble can open after a render requested a position, before delivery.
@@ -70,6 +84,7 @@ try{
  $music.Stop($false)
  if($stopPending.Status-ne 'Aborted'){throw 'Music stop did not abort queued movement'}
  $activation=[MusicDispatchProbe]::Pump(80)-or $activation
+ Wait-StableMusicBounds $widgetHandle ($original.Left+80) ($original.Top+60)
  $restored=Bounds $widgetHandle
  if($restored.Left-ne $original.Left+80-or $restored.Top-ne $original.Top+60){throw 'A queued move overwrote normal placement after stop'}
  if($activation){throw 'An isolated music test window became the foreground application'}

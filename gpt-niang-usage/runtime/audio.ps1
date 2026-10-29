@@ -137,10 +137,11 @@ function New-WidgetAudioClip([string]$Path,[double]$Volume) {
     return ,([GptNiangPcm]::Scale($wave.Bytes,$wave.Offset,$wave.Length,$Volume))
 }
 
-function Read-WidgetAudioPreferences([string]$DataDir) {
+function Read-WidgetAudioPreferences([string]$DataDir,[switch]$Backup) {
     $prefs=@{version=1;mode='builtin';press=$null;release=$null}
     if(!$DataDir){return $prefs}
     $file=Join-Path $DataDir 'audio-preferences.json'
+    if($Backup){$file+='.bak'}
     if(![IO.File]::Exists($file)){return $prefs}
     try{
         if((Get-Item -LiteralPath $file).Length-gt 16KB){throw 'Invalid audio preferences'}
@@ -283,22 +284,30 @@ function Play-WidgetReleaseSound {
     if($remaining-le 0.002){$audio.PressEnded=$true;Invoke-WidgetReleaseNow;return}
     $audio.Timer.Interval=[TimeSpan]::FromSeconds($remaining);$audio.Timer.Start()
 }
-function Remove-WidgetUnusedAudioFiles($Audio,$Preferences) {
-    # Replaced or cleared custom clips otherwise stay in the user's data folder
-    # forever. Only files inside our own sounds directory are considered.
-    if(!$Audio -or !$Audio.DataDir -or !$Preferences){return}
+function Remove-WidgetUnusedAudioFiles($Audio,$Preferences,$PreviousBackup) {
+    # Only retire files named by the superseded backup. Do not sweep unrelated
+    # files; retain the current settings and the new backup for recovery.
+    if(!$Audio -or !$Audio.DataDir -or !$Preferences -or !$PreviousBackup -or $PreviousBackup.loadError){return}
+    $backup=Read-WidgetAudioPreferences $Audio.DataDir -Backup
+    if($backup.loadError){return}
     $keep=@{}
-    foreach($slot in @('press','release')){$entry=$Preferences[$slot];if($entry -and $entry.file){$keep[[string]$entry.file]=$true}}
+    foreach($set in @($Preferences,$backup)){
+        foreach($slot in @('press','release')){$entry=$set[$slot];if($entry -and $entry.file){$keep[[string]$entry.file]=$true}}
+    }
     $directory=Join-Path $Audio.DataDir 'sounds'
     try{
-        foreach($file in [IO.Directory]::GetFiles($directory,'*.wav')){
-            if(!$keep.ContainsKey([IO.Path]::GetFileName($file))){try{[IO.File]::Delete($file)}catch{}}
+        foreach($slot in @('press','release')){
+            $entry=$PreviousBackup[$slot]
+            if($entry -and $entry.file-is [string] -and $entry.file-cmatch '^[a-f0-9]{32}\.wav$' -and !$keep.ContainsKey($entry.file)){
+                try{[IO.File]::Delete((Join-Path $directory $entry.file))}catch{}
+            }
         }
     }catch{}
 }
 function Set-WidgetAudioPreferences($Preferences,[string]$RequiredSlot) {
     $audio=$script:gptNiangAudio
     if(!$audio){throw '声音播放器尚未就绪。'}
+    $previousBackup=Read-WidgetAudioPreferences $audio.DataDir -Backup
     $candidate=$null
     try{
         $candidate=New-WidgetAudioState $audio.AppDir $audio.DataDir $Preferences
@@ -306,6 +315,9 @@ function Set-WidgetAudioPreferences($Preferences,[string]$RequiredSlot) {
         Write-WidgetAudioPreferences $audio.DataDir $Preferences
     }catch{Close-WidgetAudioState $candidate;throw}
     Close-WidgetAudio;$script:gptNiangAudio=$candidate
+    # Cleanup is best-effort after committing settings; a cleanup failure must
+    # not make the caller delete the newly committed custom clip.
+    try{Remove-WidgetUnusedAudioFiles $candidate $Preferences $previousBackup}catch{}
 }
 function Import-WidgetAudio([ValidateSet('press','release')][string]$Slot,[string]$Path) {
     if(!$Path){return $false}
@@ -336,7 +348,7 @@ function Import-WidgetAudio([ValidateSet('press','release')][string]$Slot,[strin
         }
         $prefs=Copy-WidgetAudioPreferences $audio.Preferences
         $prefs.mode='custom';$prefs[$Slot]=@{file=$filename;name=[IO.Path]::GetFileName($Path)}
-        Set-WidgetAudioPreferences $prefs $Slot;Remove-WidgetUnusedAudioFiles $script:gptNiangAudio $prefs;$committed=$true;return $true
+        Set-WidgetAudioPreferences $prefs $Slot;$committed=$true;return $true
     }finally{
         if($process){$process.Dispose()}
         if(!$committed -and [IO.File]::Exists($target)){[IO.File]::Delete($target)}
@@ -344,11 +356,11 @@ function Import-WidgetAudio([ValidateSet('press','release')][string]$Slot,[strin
 }
 function Set-WidgetAudioMode([ValidateSet('builtin','custom')][string]$Mode) {
     $prefs=Copy-WidgetAudioPreferences $script:gptNiangAudio.Preferences;$prefs.mode=$Mode
-    Set-WidgetAudioPreferences $prefs;Remove-WidgetUnusedAudioFiles $script:gptNiangAudio $prefs
+    Set-WidgetAudioPreferences $prefs
 }
 function Clear-WidgetAudioSlot([ValidateSet('press','release')][string]$Slot) {
     $prefs=Copy-WidgetAudioPreferences $script:gptNiangAudio.Preferences;$prefs.mode='custom';$prefs[$Slot]=$null
-    Set-WidgetAudioPreferences $prefs;Remove-WidgetUnusedAudioFiles $script:gptNiangAudio $prefs
+    Set-WidgetAudioPreferences $prefs
 }
 function Invoke-WidgetAudioPreview([ValidateSet('press','release')][string]$Slot) {
     $audio=$script:gptNiangAudio

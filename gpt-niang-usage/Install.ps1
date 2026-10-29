@@ -23,9 +23,11 @@ try {
   if($LASTEXITCODE-ne 0){throw 'Codex rejected the GPT Niang plugin.'}
   Assert-WidgetPluginRegistration $config.codexPath $config.version
   $link=(New-Object -ComObject WScript.Shell).CreateShortcut($config.startupShortcut)
-  $link.TargetPath=Join-Path $env:WINDIR 'System32\wscript.exe'
-  $link.Arguments='"'+(Join-Path $config.updateAgent 'agent-launch.vbs')+'"'
-  $link.WorkingDirectory=$config.updateAgent
+  # Startup is an independent fallback if the scheduled action cannot run.
+  $link.TargetPath=Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  $link.Arguments=Get-WidgetAgentPowerShellArguments $config.updateAgent
+  $link.WorkingDirectory=Join-Path $env:WINDIR 'System32'
+  $link.WindowStyle=7
   $link.Description='GPT Niang: Codex subscription quota widget'
   $link.Save()
   $task=Register-WidgetSupervisorTask -AppDir $appDir

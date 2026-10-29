@@ -18,8 +18,14 @@ try{
   $commonFile=Join-Path $moved 'runtime\update-common.ps1'
   $common=[IO.File]::ReadAllText($commonFile)
   $isolatedAgent=Join-Path $testRoot 'update-agent'
-  $common=$common.Replace("(Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'GPTNiangUsage\update-agent')",("'"+$isolatedAgent.Replace("'","''")+"'"))
+  $common=$common.Replace("(Join-Path (Get-WidgetLocalApplicationData) 'GPTNiangUsage\update-agent')",("'"+$isolatedAgent.Replace("'","''")+"'"))
   [IO.File]::WriteAllText($commonFile,$common,[Text.UTF8Encoding]::new($false))
+  # CLI capability execution has its own executable-fixture regression. Keep
+  # this fixture focused on filesystem/task ownership and installer ordering.
+  $preflightFile=Join-Path $moved 'runtime\install-preflight.ps1'
+  $preflight=[IO.File]::ReadAllText($preflightFile).Replace('function Test-WidgetCodexCapabilities(', 'function Unused-WidgetCodexCapabilities(')
+  $preflight="function Test-WidgetCodexCapabilities([string]`$Path){return `$true}`r`n"+$preflight
+  [IO.File]::WriteAllText($preflightFile,$preflight,[Text.UTF8Encoding]::new($false))
   $old=Join-Path $testRoot 'original'
   $data=Join-Path $testRoot 'state'
   $null=New-Item -ItemType Directory -Path $data
@@ -103,7 +109,7 @@ try{
   $stableInfo=Get-WidgetSupervisorInfo $moved $installed
   $stableTask=[pscustomobject]@{TaskName=$stableInfo.TaskName;TaskPath=$stableInfo.TaskPath;State='Ready';Principal=@{UserId=$stableInfo.Sid;LogonType='Interactive';RunLevel='Limited'};Actions=@(@{Execute=$stableInfo.Execute;Arguments=$stableInfo.Arguments;WorkingDirectory=$stableInfo.WorkingDirectory})}
   $global:widgetInstallerTestTasks=@($stableTask)
-  $stableShortcut=@{TargetPath=$stableInfo.Execute;Arguments=('"'+(Join-Path $isolatedAgent 'agent-launch.vbs')+'"')}
+  $stableShortcut=@{TargetPath=(Join-Path $env:WINDIR 'System32\wscript.exe');Arguments=('"'+(Join-Path $isolatedAgent 'agent-launch.vbs')+'"')}
   $result=(& (Join-Path $moved 'Install.ps1') -CheckOnly)|ConvertFrom-Json
   Assert ($result.ok) 'missing binding with a verified existing task passes installer preflight'
   Assert (!(Test-Path -LiteralPath $bindingFile)) 'CheckOnly does not recreate missing binding'

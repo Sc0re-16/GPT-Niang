@@ -11,20 +11,21 @@ using System.Windows.Automation;
 public static class GptWidgetHostReadiness {
  static readonly object Gate=new object();
  static IntPtr target;
+ static IntPtr pendingTarget;
  static Task<bool> pending;
  static Task<bool> StartProbe(IntPtr handle){
   return Task.Factory.StartNew(()=>HasInterface(handle),CancellationToken.None,TaskCreationOptions.LongRunning,TaskScheduler.Default);
  }
  // UI Automation can wait on an unresponsive app. Keep all provider calls off
- // the WPF Dispatcher, with at most one outstanding probe per active host.
+ // the WPF Dispatcher, with at most one outstanding probe across all hosts.
  public static bool Poll(IntPtr handle){
   lock(Gate){
-   if(target!=handle){target=handle;pending=null;}
+   target=handle;
    if(handle==IntPtr.Zero)return false;
-   if(pending==null){pending=StartProbe(handle);return false;}
+   if(pending==null){pendingTarget=handle;pending=StartProbe(handle);return false;}
    if(!pending.IsCompleted)return false;
-   bool ready=pending.Status==TaskStatus.RanToCompletion&&pending.Result;
-   pending=StartProbe(handle);
+   bool ready=pendingTarget==handle&&pending.Status==TaskStatus.RanToCompletion&&pending.Result;
+   pendingTarget=handle;pending=StartProbe(handle);
    return ready;
   }
  }

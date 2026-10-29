@@ -104,13 +104,24 @@ function Copy-WidgetUnmanagedRootItems($Journal,[switch]$EmbeddedData) {
   # Legacy installs often share their outer folder with screenshots and downloads.
   $managed=@('.agents','gpt-niang-usage','.gitignore','LICENSE','README.md','更新记录.md','SHA256SUMS.txt',
     '安装GPT娘.cmd','打开GPT娘.cmd','停用GPT娘.cmd','检测套餐.cmd')
+  # PowerShell 5.1 may decode UTF-8 scripts using a non-Chinese system code page.
+  $historicalNote=([string][char]0x672C+[char]0x673A+[char]0x4FEE+[char]0x8BA2+'-20261025.md')
+  $sharedReleaseFiles=@('.gitattributes',$historicalNote)
   foreach($item in @(Get-ChildItem -LiteralPath $Journal.root -Force)){
     if($item.Name-in $managed){continue}
     $containsData=$Journal.dataDir-ieq $item.FullName -or $Journal.dataDir.StartsWith($item.FullName+'\',[StringComparison]::OrdinalIgnoreCase)
     if($EmbeddedData -and !$containsData){continue}
     $target=Join-Path $Journal.nextRoot $item.Name
     Assert-WidgetUpdateChildPath $target $Journal.nextRoot
-    if(Test-Path -LiteralPath $target){throw ('Candidate overlaps a personal file or directory: '+$item.Name)}
+    if(Test-Path -LiteralPath $target){
+      # Only known release files with identical contents may overlap. A user
+      # modification, directory, or reparse point still blocks replacement.
+      Assert-WidgetNoReparsePoint $item.FullName
+      Assert-WidgetNoReparsePoint $target
+      $shared=!$containsData -and !$item.PSIsContainer -and $item.Name-in $sharedReleaseFiles -and (Test-Path -LiteralPath $target -PathType Leaf)
+      if($shared -and (Get-WidgetFileHash $item.FullName)-eq (Get-WidgetFileHash $target)){continue}
+      throw ('Candidate overlaps a personal file or directory: '+$item.Name)
+    }
     if(!$EmbeddedData -and $containsData){continue}
     Assert-WidgetNoReparsePoint $item.FullName
     if($item.PSIsContainer){Copy-WidgetVerifiedTree $item.FullName $target}
@@ -134,20 +145,47 @@ function Wait-WidgetUpdateIdle($Journal) {
     Start-Sleep -Milliseconds 500
   }
 }
-function Wait-WidgetUpdatedHealth($Journal) {
+function Wait-WidgetUpdatedHealth($Journal,[ValidateRange(1,2147483647)][int]$TimeoutMilliseconds=30000) {
   $config=Read-WidgetUpdateJson (Join-Path $Journal.appDir 'installation.json')
   Assert-WidgetPluginRegistration $config.codexPath $Journal.version
-  $deadline=[DateTime]::UtcNow.AddSeconds(30)
+  $installedAt=([DateTime]$Journal.installStartedAt).ToUniversalTime()
+  $deadline=[DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
   do {
-    $status=Read-WidgetUpdateJson (Join-Path $Journal.dataDir 'supervisor-status.json')
-    if($status -and ([DateTime]::UtcNow-([DateTime]$status.at).ToUniversalTime()).TotalSeconds-lt 10 -and ([DateTime]$status.at).ToUniversalTime()-ge ([DateTime]$Journal.installStartedAt).ToUniversalTime()) {
+    try{
+      $now=[DateTime]::UtcNow
+      $status=Read-WidgetUpdateJson (Join-Path $Journal.dataDir 'supervisor-status.json')
+      $at=([DateTime]$status.at).ToUniversalTime()
+      if(!$status -or $at-lt $installedAt -or $at-gt $now -or ($now-$at).TotalSeconds-ge 10 -or
+         $status.paused-isnot [bool] -or $status.widgetRunning-isnot [bool] -or $null-eq $status.visibleWindows -or [int]$status.visibleWindows-lt 0){throw 'Supervisor is not ready.'}
       $process=Get-CimInstance Win32_Process -Filter ('ProcessId='+[int]$status.pid) -ErrorAction Stop
       $expected='"'+(Join-Path (Get-WidgetUpdateAgentDir) 'update-agent.ps1')+'"'
-      if($process -and $process.Name-in @('powershell.exe','pwsh.exe') -and $process.CommandLine.IndexOf($expected,[StringComparison]::OrdinalIgnoreCase)-ge 0){return}
-    }
-    Start-Sleep -Milliseconds 500
+      $encoded=Get-WidgetAgentPowerShellArguments (Get-WidgetUpdateAgentDir)
+      if(!$process -or $process.Name-notin @('powershell.exe','pwsh.exe') -or ![string]$process.CommandLine -or
+         ([string]$process.CommandLine).IndexOf($expected,[StringComparison]::OrdinalIgnoreCase)-lt 0 -and ([string]$process.CommandLine).IndexOf($encoded,[StringComparison]::Ordinal)-lt 0 -or
+         !$status.processStartedAt -or ([DateTime]$process.CreationDate).ToUniversalTime()-lt $installedAt -or
+         [Math]::Abs((([DateTime]$status.processStartedAt).ToUniversalTime()-([DateTime]$process.CreationDate).ToUniversalTime()).TotalMilliseconds)-ge 0.001){throw 'New supervisor identity was not confirmed.'}
+      $settings=Read-WidgetUpdateJson (Join-Path $Journal.dataDir 'settings.json')
+      $desktop=$settings -and $settings.followHost-is [bool] -and !$settings.followHost
+      # Hidden hosts and a deliberate pause legitimately have no GUI. Desktop
+      # mode still requires one even when Codex has no visible windows.
+      if($status.paused -or (!$desktop -and [int]$status.visibleWindows-eq 0)){return}
+      if(!$status.widgetRunning){throw 'New widget has not initialized.'}
+      $runtime=Read-WidgetUpdateJson (Join-Path $Journal.dataDir 'runtime.json')
+      if(!$runtime.processStartedAt -or [long]$runtime.widget-le 0 -or ([DateTime]$runtime.startedAt).ToUniversalTime()-lt $installedAt){throw 'New widget runtime is not ready.'}
+      $gui=Get-CimInstance Win32_Process -Filter ('ProcessId='+[int]$runtime.pid) -ErrorAction Stop
+      $widget='"'+(Join-Path $Journal.appDir 'widget.ps1')+'"'
+      # CIM CreationDate has microsecond precision; Process.StartTime has 100 ns
+      # precision. Compare at CIM precision so a real new GUI is not rejected.
+      if($gui -and $gui.Name-in @('powershell.exe','pwsh.exe') -and [string]$gui.CommandLine -and
+         ([string]$gui.CommandLine).IndexOf($widget,[StringComparison]::OrdinalIgnoreCase)-ge 0 -and
+         ([DateTime]$gui.CreationDate).ToUniversalTime()-ge $installedAt -and
+         [Math]::Abs((([DateTime]$runtime.processStartedAt).ToUniversalTime()-([DateTime]$gui.CreationDate).ToUniversalTime()).TotalMilliseconds)-lt 0.001){return}
+      throw 'New widget process identity was not confirmed.'
+    }catch{ $lastHealthError=$_.Exception.Message }
+    $remaining=[int][Math]::Max(0,($deadline-[DateTime]::UtcNow).TotalMilliseconds)
+    if($remaining-gt 0){Start-Sleep -Milliseconds ([Math]::Min(500,$remaining))}
   }while([DateTime]::UtcNow-lt $deadline)
-  throw 'New supervisor heartbeat was not confirmed.'
+  throw ('Updated installation health was not confirmed: '+$lastHealthError)
 }
 function Invoke-WidgetUpdateInstaller($Journal,[string]$Token) {
   & (Join-Path $Journal.appDir 'Install.ps1') -UpdateToken $Token

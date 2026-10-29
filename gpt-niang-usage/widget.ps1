@@ -117,7 +117,7 @@ $script:status=$null
 $script:statusStamp=0
 $script:offsetRight=0.0;$script:offsetBottom=0.0;$script:offsetLeft=$null;$script:anchor='right';$script:side='right';$script:scale=1.0;$script:bubbleScale=1.0;$script:collapsed=$true
 $script:soundOn=$true;$script:soundVolume=0.9;$script:bubbleTapAdvance=$false;$script:hideMenu=$false
-$script:followHost=$true;$script:desktopTopmost=$false;$script:desktopLeft=$null;$script:desktopTop=$null
+$script:followHost=$true;$script:desktopTopmost=$false;$script:desktopLeft=$null;$script:desktopTop=$null;$script:desktopPositionPending=$false
 $script:hostReadiness=New-WidgetReadinessState
 $script:bubbleMode='quota';$script:sceneStartedAt=0;$script:sceneDeadline=0;$script:sceneTimer=$null;$script:sceneRevision=0
 $script:resetTimeMode='countdown';$script:resetPhaseTimer=$null
@@ -127,7 +127,7 @@ $script:settingsLoadFailed=$false
 try{$settings=Get-Content -LiteralPath $settingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
   # Each field is read independently: one malformed value must not discard the
   # remaining valid preferences (and startup must not then overwrite them).
-  if($null-ne $settings.right){try{$value=[double]$settings.right;if(![double]::IsNaN($value)-and ![double]::IsInfinity($value)-and [Math]::Abs($value)-le 100000){$script:offsetRight=[Math]::Max(0.0,$value)}}catch{}}
+  if($null-ne $settings.right){try{$value=[double]$settings.right;if(![double]::IsNaN($value)-and ![double]::IsInfinity($value)-and [Math]::Abs($value)-le 100000){$script:offsetRight=$value}}catch{}}
   if($null-ne $settings.bottom){
     try{$savedBottom=[double]$settings.bottom;if(![double]::IsNaN($savedBottom) -and ![double]::IsInfinity($savedBottom) -and [Math]::Abs($savedBottom)-le 100000){$script:offsetBottom=$savedBottom}}catch{}
   }
@@ -291,6 +291,9 @@ function Set-Appearance {
 function Test-WidgetPlacementFrame($Frame,[double]$Dpi=1) {
   return $Frame -and $Dpi-gt 0 -and ($Frame.Right-$Frame.Left)-ge 64*$Dpi -and ($Frame.Bottom-$Frame.Top)-ge 64*$Dpi
 }
+function Test-WidgetDesktopCoordinates {
+  return ($null-ne [Windows.PresentationSource]::FromVisual($script:window) -and $null-ne [Windows.PresentationSource]::FromVisual($script:ui.Root.Parent))
+}
 function Limit-WidgetHorizontalPosition($Frame,[double]$Dpi,[double]$Left) {
   # Mirror-aware character bounds; transparent bubble space may extend outside.
   # Use the resting layout so press/rebound never changes the drag limits.
@@ -321,6 +324,34 @@ function Limit-WidgetVerticalPosition($Frame,[double]$Dpi,[double]$Top) {
   $minimum=$Frame.Top-($topPoint.Y-$origin.Y)
   $maximum=$Frame.Bottom-($bottomPoint.Y-$origin.Y)
   return [int][Math]::Round([Math]::Max($minimum,[Math]::Min($maximum,$Top)))
+}
+function Get-WidgetCharacterPixelBounds([double]$Dpi) {
+  # Resting character bounds, excluding transparent bubble/animation padding.
+  $root=$script:ui.Root;$girl=$script:ui.Girl
+  $source=[Windows.PresentationSource]::FromVisual($script:window)
+  if($source -and $source.CompositionTarget -and $root.Parent -and $null-ne [Windows.PresentationSource]::FromVisual($root.Parent)){
+    # Use arranged (pixel-rounded) offsets once connected. Canvas coordinates
+    # alone can differ by several pixels at large independent bubble scales.
+    if(!$root.IsArrangeValid -or !$girl.IsArrangeValid){$script:window.UpdateLayout()}
+    $rootOffset=[Windows.Media.VisualTreeHelper]::GetOffset($root)
+    $girlOffset=[Windows.Media.VisualTreeHelper]::GetOffset($girl)
+    $left=$girlOffset.X
+    if($script:ui.FacingScale.ScaleX-lt 0){$left=$root.ActualWidth-$left-$girl.ActualWidth}
+    $left+=$rootOffset.X;$top=$rootOffset.Y+$girlOffset.Y
+    $transform=$root.Parent.TransformToAncestor($script:window)
+    $a=$transform.Transform([Windows.Point]::new($left,$top))
+    $b=$transform.Transform([Windows.Point]::new(($left+$girl.ActualWidth),($top+$girl.ActualHeight)))
+    $a=$source.CompositionTarget.TransformToDevice.Transform($a)
+    $b=$source.CompositionTarget.TransformToDevice.Transform($b)
+    return [int[]]@($a.X,$a.Y,$b.X,$b.Y)
+  }
+  # Before Show there is no presentation target; use the known design layout.
+  $left=[Windows.Controls.Canvas]::GetLeft($girl)
+  if($script:ui.FacingScale.ScaleX-lt 0){$left=$root.Width-$left-$girl.Width}
+  $left+=[Windows.Controls.Canvas]::GetLeft($root)
+  $top=[Windows.Controls.Canvas]::GetTop($root)+[Windows.Controls.Canvas]::GetTop($girl)
+  $factor=$script:displayScale*$Dpi
+  return [int[]]@(($left*$factor),($top*$factor),(($left+$girl.Width)*$factor),(($top+$girl.Height)*$factor))
 }
 function Get-WidgetVisibleFrame {
   $frame=[GptWidgetNative]::Frame($script:hostHandle)
@@ -699,7 +730,8 @@ function Update-Quota {
   else{
     $at=[DateTimeOffset]::FromUnixTimeMilliseconds([long]$script:status.observedAt).ToLocalTime().ToString('HH:mm:ss')
     if($script:status.error){$script:ui.Status.Text="刷新未成功 · 上次 $at";$dot='#C5A96F'}
-    elseif($age-gt 180){$mins=[Math]::Floor($age/60);$script:ui.Status.Text="$mins 分钟前的额度 · 点击 ↻ 刷新";$dot='#C5A96F'}
+    elseif($age-gt 180){$mins=[Math]::Floor($age/60);$script:ui.Status.Text=if($script:status.accountVerified-eq $false){"$mins 分钟前 · 账户待确认"}else{"$mins 分钟前的额度 · 点击 ↻ 刷新"};$dot='#C5A96F'}
+    elseif($script:status.accountVerified-eq $false){$script:ui.Status.Text="$at 更新 · 账户待确认";$dot='#C5A96F'}
     else{$script:ui.Status.Text="$at 更新 · 实时订阅额度"}
   }
   $script:ui.LiveDot.Fill=[Windows.Media.BrushConverter]::new().ConvertFromString($dot)
@@ -882,7 +914,10 @@ function Ensure-QuotaWorker([long]$now){
   try{
     $health=Get-Content -LiteralPath (Join-Path $script:dataDir 'worker-status.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $owner=Get-Content -LiteralPath (Join-Path $script:dataDir 'worker.lock') -Raw -Encoding UTF8 | ConvertFrom-Json
-    if($health.token -and $health.token-eq $owner.token -and $health.pid-eq $owner.pid -and $now-[long]$health.at-ge 0 -and $now-[long]$health.at-lt 5000){
+    # A heartbeat written after the tick started is still current. Read the
+    # clock after the record so it is not mistaken for a future heartbeat.
+    $heartbeatNow=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    if($health.token -and $health.token-eq $owner.token -and $health.pid-eq $owner.pid -and $heartbeatNow-[long]$health.at-ge 0 -and $heartbeatNow-[long]$health.at-lt 5000){
       $workerProcess=Get-Process -Id ([int]$health.pid) -ErrorAction Stop
       try{$healthy=$workerProcess.Path-eq $script:config.nodePath -and $workerProcess.StartTime.ToUniversalTime()-le [DateTimeOffset]::FromUnixTimeMilliseconds([long]$health.startedAt).UtcDateTime}
       finally{$workerProcess.Dispose()}
@@ -982,17 +1017,33 @@ function Tick-Widget {
       }else{$x=[int]($frame.Right-$w-$script:offsetRight*$dpi)}
       $desiredY=if($script:followHost){$frame.Bottom-$h-$script:offsetBottom*$dpi}else{$script:desktopTop}
       $y=[int]$desiredY
+      # A smaller host must not clip away a saved free-position character.
+      # Clamp to the full host frame, not the monitor, and retain saved offsets
+      # so growing the host restores the user's requested relative position.
+      $desktopCoordinatesReady=$script:followHost
       if(!$script:followHost){
+        $desktopCoordinatesReady=Test-WidgetDesktopCoordinates
+      }
+      if($script:followHost){
+        # Layout coordinates also work before the first Show; PointToScreen
+        # requires a connected visual tree and cannot be used at startup.
+        $characterBounds=Get-WidgetCharacterPixelBounds $dpi
+        $minimum=$frame.Left-$characterBounds[0];$maximum=$frame.Right-$characterBounds[2]
+        $x=if($maximum-lt $minimum){[int][Math]::Round(($minimum+$maximum)/2)}else{[Math]::Max($minimum,[Math]::Min($maximum,$x))}
+        $y=[Math]::Max(($frame.Top-$characterBounds[1]),[Math]::Min(($frame.Bottom-$characterBounds[3]),$y))
+      }elseif($desktopCoordinatesReady){
         $x=Limit-WidgetHorizontalPosition $frame $dpi $x
         $y=Limit-WidgetVerticalPosition $frame $dpi $desiredY
-      }
+      }else{$script:desktopPositionPending=$true}
       $position="$($script:hostHandle):$x,$y,$w,$h"
-      if($position-ne $script:lastPosition -and !(Test-WidgetMusicActive)){
+      $forceDesktopPosition=(!$script:followHost -and $desktopCoordinatesReady -and $script:desktopPositionPending)
+      if(($script:followHost-or $desktopCoordinatesReady) -and ($position-ne $script:lastPosition -or $forceDesktopPosition) -and !(Test-WidgetMusicActive)){
         [GptWidgetNative]::SetWindowPos($script:widgetHandle,[IntPtr]::Zero,$x,$y,0,0,0x15)|Out-Null
         $script:lastPosition=$position
+        if($forceDesktopPosition){$script:desktopPositionPending=$false}
         if($script:context.IsOpen){Set-WidgetMenuBounds;Position-WidgetMenuToHost}
       }
-      if($script:followHost){$nativeFrame=[GptWidgetNative]::Frame($script:hostHandle);$script:hostFollower.Configure($script:hostHandle,$nativeFrame.Left,$nativeFrame.Top,$nativeFrame.Right,$nativeFrame.Bottom,$w,$h,[int]($script:offsetLeft*$dpi),[int]($script:offsetRight*$dpi),[int]($script:offsetBottom*$dpi),$script:anchor,$true)}
+      if($script:followHost){$nativeFrame=[GptWidgetNative]::Frame($script:hostHandle);$script:hostFollower.Configure($script:hostHandle,$nativeFrame.Left,$nativeFrame.Top,$nativeFrame.Right,$nativeFrame.Bottom,$w,$h,[int]($script:offsetLeft*$dpi),[int]($script:offsetRight*$dpi),[int]($script:offsetBottom*$dpi),$script:anchor,$true,$characterBounds)}
       Update-WidgetMusicPlacement $frame $dpi $x $y ([bool]$visible)
     }
     if($script:followHost){
@@ -1000,7 +1051,15 @@ function Tick-Widget {
       if(!$script:occlusionRecovery.OwnedCloak){$layer=Set-WidgetAboveHost $script:widgetHandle $script:hostHandle $musicLight}
     }
     else{Set-WidgetDesktopLayer $script:widgetHandle $script:desktopTopmost}
-    if($showWidget){Reset-WidgetAutoQuoteSchedule $now;$script:window.Show();$script:lastPosition=$null;Request-Refresh}
+    if($showWidget){
+      Reset-WidgetAutoQuoteSchedule $now
+      $script:window.Show()
+      if(!$script:followHost){
+        $script:window.UpdateLayout();$script:desktopPositionPending=$true
+        if($script:hostEventTimer){$script:hostEventTimer.Start()}
+      }
+      $script:lastPosition=$null;Request-Refresh
+    }
   }elseif($script:window.IsVisible){
     Reset-WidgetAutoQuoteSchedule $now
     $script:hostFollower.Suspend()

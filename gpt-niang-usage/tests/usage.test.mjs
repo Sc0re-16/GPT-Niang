@@ -136,6 +136,59 @@ test('account read protocol error clears a snapshot whose account cannot be veri
   assert.equal(snapshot.error,'暂时无法读取登录状态');
 });
 
+function routingTimeoutServer(quotaResponse) {
+  const calls=[];
+  const spawnProcess=()=>{
+    const proc=new EventEmitter();
+    proc.stdin=new PassThrough();proc.stdout=new PassThrough();proc.stderr=new PassThrough();proc.kill=()=>{};
+    let pending='';
+    proc.stdin.on('data',chunk=>{
+      pending+=chunk.toString();let at;
+      while((at=pending.indexOf('\n'))>=0){
+        const request=JSON.parse(pending.slice(0,at));pending=pending.slice(at+1);calls.push(request.method);
+        if(request.method==='initialize')queueMicrotask(()=>proc.stdout.write(JSON.stringify({id:request.id,result:{}})+'\n'));
+        else if(request.method==='account/read')queueMicrotask(()=>proc.stdout.write(JSON.stringify({id:request.id,error:{code:-32603,message:'workspace routing discovery timed out'}})+'\n'));
+        else if(request.method==='account/rateLimits/read' && quotaResponse!==undefined)queueMicrotask(()=>proc.stdout.write(JSON.stringify({id:request.id,...quotaResponse})+'\n'));
+      }
+    });return proc;
+  };
+  return {calls,spawnProcess};
+}
+
+test('routing timeout can return a fresh direct quota without reusing an unverified account snapshot',async()=>{
+  const identity='workspace-test-identity';
+  const server=routingTimeoutServer({result:{accountId:identity,rateLimits:{planType:'plus',primary:w(12)}}});
+  const seen=[];
+  const result=await readUsage('fake-codex',{spawnProcess:server.spawnProcess,timeoutMs:1000,fallbackTimeoutMs:1000,onAccount:key=>seen.push(key)});
+  assert.deepEqual(server.calls,['initialize','initialized','account/read','account/rateLimits/read']);
+  assert.deepEqual(seen,[null]);
+  assert.equal(result.queryOk,true);assert.equal(result.ok,true);assert.equal(result.windows[0].remaining,88);
+  assert.equal(result.plan,'plus');assert.equal(result.authType,null);assert.equal(result.accountKey,null);assert.equal(result.clearPrevious,true);assert.equal(result.accountVerified,false);
+  assert.equal(JSON.stringify(result).includes(identity),false);
+  const previous={...normalizeLimits({rateLimits:{primary:w(90)}},1000),accountKey:'previous-account'};
+  const snapshot=mergeUsageSnapshot(previous,result,2000);
+  assert.equal(snapshot.windows[0].remaining,88);assert.equal(snapshot.accountKey,null);
+  const nextFailure=mergeUsageSnapshot(snapshot,{ok:false,queryOk:false,accountKey:null,clearPrevious:true,windows:[]},3000);
+  assert.deepEqual(nextFailure.windows,[]);
+});
+
+test('routing timeout fallback rejects a quota response without an account identifier',async()=>{
+  for(const accountId of [undefined,null,'',42]){
+    const server=routingTimeoutServer({result:{accountId,rateLimits:{planType:'plus',primary:w()}}});
+    const result=await readUsage('fake-codex',{spawnProcess:server.spawnProcess,timeoutMs:1000,fallbackTimeoutMs:1000});
+    assert.equal(result.ok,false);assert.equal(result.clearPrevious,true);assert.deepEqual(result.windows,[]);
+  }
+});
+
+test('routing timeout fallback reports quota failures and remains bounded',async()=>{
+  const failed=routingTimeoutServer({error:{code:-32603,message:'quota unavailable'}});
+  const result=await readUsage('fake-codex',{spawnProcess:failed.spawnProcess,timeoutMs:1000,fallbackTimeoutMs:1000});
+  assert.equal(result.ok,false);assert.equal(result.clearPrevious,true);assert.deepEqual(result.windows,[]);
+  const hanging=routingTimeoutServer(undefined);
+  const timed=await readUsage('fake-codex',{spawnProcess:hanging.spawnProcess,timeoutMs:1000,fallbackTimeoutMs:25});
+  assert.equal(timed.ok,false);assert.equal(timed.clearPrevious,true);assert.match(timed.error,/超时/);
+});
+
 test('a missing reset keeps the valid percentage and does not invent expiry',()=>{
   for(const resetsAt of [null,undefined,NaN,0,-1,'2000000000',1e100,253402300799]) {
     const result=normalizeLimits({rateLimits:{primary:{...w(12),resetsAt}}},1000);

@@ -1,3 +1,4 @@
+param([switch]$KeepFixture)
 # Optional real Codex CLI / Task Scheduler test. It uses a private Codex home,
 # a dedicated task name, temporary shortcut and launcher, and never opens a GUI.
 $ErrorActionPreference='Stop'
@@ -13,6 +14,11 @@ $lock=$null
 function Copy-TestPackage([string]$Root,[string]$Version) {
   $null=New-Item -ItemType Directory -Path $Root -Force
   $target=Join-Path $Root 'gpt-niang-usage';Copy-Item -LiteralPath $source -Destination $target -Recurse
+  # Other tests can create private fixtures beneath tests/ while this runs.
+  # Candidate bundles contain runtime assets, never those concurrent fixtures.
+  $copiedTests=[IO.Path]::GetFullPath((Join-Path $target 'tests'))
+  if(!$copiedTests.StartsWith([IO.Path]::GetFullPath($testRoot).TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Unsafe copied-test cleanup'}
+  if(Test-Path -LiteralPath $copiedTests){Remove-Item -LiteralPath $copiedTests -Recurse -Force}
   $metadata=Join-Path $Root '.agents\plugins';$null=New-Item -ItemType Directory -Path $metadata -Force
   Copy-Item -LiteralPath (Join-Path (Split-Path $source -Parent) '.agents\plugins\marketplace.json') -Destination $metadata
   foreach($name in @('package.json','.codex-plugin\plugin.json')){
@@ -20,14 +26,15 @@ function Copy-TestPackage([string]$Root,[string]$Version) {
     [IO.File]::WriteAllText($file,($value|ConvertTo-Json -Depth 12),[Text.UTF8Encoding]::new($false))
   }
   $files=@{
-    'update-common.ps1'=@{Before="(Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'GPTNiangUsage\update-agent')";After=("'"+$agent.Replace("'","''")+"'")}
+    'update-common.ps1'=@{Before="(Join-Path (Get-WidgetLocalApplicationData) 'GPTNiangUsage\update-agent')";After=("'"+$agent.Replace("'","''")+"'")}
     'supervisor-task.ps1'=@{Before='(''GPT Niang Usage - ''+$sid)';After='(''GPT Niang Usage Updater Test - ''+$sid)'}
-    'install-preflight.ps1'=@{Before="[Environment]::GetFolderPath('Startup')";After=("'"+(Join-Path $testRoot 'startup').Replace("'","''")+"'")}
+    'install-preflight.ps1'=@{Before="Get-WidgetKnownFolderPath ([Guid]'B97D20BB-F46A-4C97-BA10-5E3608430854')";After=("'"+(Join-Path $testRoot 'startup').Replace("'","''")+"'")}
     'supervisor.ps1'=@{Before='$hosts=@([GptWidgetSupervisorNative]::Hosts())';After='$hosts=@()'}
     'update-agent.ps1'=@{Before='$ErrorActionPreference=''Stop''';After=('$ErrorActionPreference=''Stop'''+[Environment]::NewLine+'$env:CODEX_HOME='''+(Join-Path $testRoot 'codex-home').Replace("'","''")+'''')}
   }
   foreach($entry in $files.GetEnumerator()) {
     $file=Join-Path $target ('runtime\'+$entry.Key);$text=[IO.File]::ReadAllText($file)
+    if(!$text.Contains($entry.Value.Before)){throw ('Isolation patch anchor missing: '+$entry.Key)}
     $text=$text.Replace($entry.Value.Before,$entry.Value.After)
     if($entry.Key-eq 'supervisor.ps1'){$text=$text.Replace('Local\GPTNiangSupervisor-',('Local\GPTNiangSupervisorTest-'+(Split-Path $testRoot -Leaf)+'-'))}
     [IO.File]::WriteAllText($file,$text,[Text.UTF8Encoding]::new($false))
@@ -79,7 +86,7 @@ try {
   Write-WidgetSupervisorJson (Join-Path $data 'update-preferences.json') @{automatic=$false}
   Wait-IsolatedProcess (Start-IsolatedPowerShell (Join-Path $app 'Install.ps1'))
   $registered=Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
-  if($registered.Actions[0].WorkingDirectory-ine $agent){throw 'Real task did not use the isolated stable entry.'}
+  if($registered.Actions[0].WorkingDirectory-ine (Join-Path $env:WINDIR 'System32')-or $registered.Actions[0].Arguments-cne (Get-WidgetAgentPowerShellArguments $agent)){throw 'Real task did not use the isolated stable entry.'}
   Write-Output 'PASS real initial plugin and stable scheduled task registration'
   $lock=Enter-WidgetUpdateLock
   $job=Join-Path $data ('updates\'+$lock.Token);$candidate=Join-Path $job 'package\bundle'
@@ -136,17 +143,28 @@ try {
   Write-Output 'PASS real scheduled restart recovers the missing program directory and supervisor'
   Wait-IsolatedProcess (Start-IsolatedPowerShell (Join-Path $app 'Uninstall.ps1'))
   Write-Output 'PASS isolated plugin and task cleanup'
-} catch {Write-Output $_.Exception.Message;throw} finally {
+} catch {
+  Write-Output $_.Exception.Message
+  $diagnostic=@{root=$testRoot;error=$_.Exception.Message;files=@{}}
+  foreach($file in @((Join-Path $agent 'update-diagnostic.txt'),(Join-Path $agent 'update-transaction.json'),(Join-Path $data 'supervisor-error.txt'),(Join-Path $data 'supervisor-status.json'))){if(Test-Path -LiteralPath $file){$diagnostic.files[$file]=[IO.File]::ReadAllText($file)}}
+  try{$diagnostic.task=Get-ScheduledTaskInfo -TaskName $taskName|Select-Object LastTaskResult,LastRunTime,NextRunTime}catch{}
+  $expectedArgs=Get-WidgetAgentPowerShellArguments $agent
+  $diagnostic.processes=@(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'"|Where-Object {$_.CommandLine-and $_.CommandLine.Contains($expectedArgs)}|Select-Object ProcessId,CommandLine)
+  [IO.File]::WriteAllText((Join-Path $testRoot 'diagnostic.json'),($diagnostic|ConvertTo-Json -Depth 10),[Text.UTF8Encoding]::new($false))
+  Write-Output ('Integration diagnostic retained at '+(Join-Path $testRoot 'diagnostic.json'))
+  throw
+} finally {
   if($lock){Exit-WidgetUpdateLock $lock}
   foreach($process in $processes){if(!$process.HasExited){$process.Kill();$process.WaitForExit()};$process.Dispose()}
   $task=Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
   if($task){
-    if($task.Actions[0].WorkingDirectory-ine $agent){throw 'Refusing cleanup of a foreign integration task.'}
+    if($task.Actions[0].Arguments-cne (Get-WidgetAgentPowerShellArguments $agent)-or $task.Actions[0].Execute-ine $powerShell){throw 'Refusing cleanup of a foreign integration task.'}
     Stop-ScheduledTask -TaskName $taskName
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
   }
   $expected='"'+(Join-Path $agent 'update-agent.ps1')+'"'
-  $children=@(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'"|Where-Object{$_.ProcessId-ne $PID -and $_.CommandLine -and $_.CommandLine.IndexOf($expected,[StringComparison]::OrdinalIgnoreCase)-ge 0})
+  $encoded=Get-WidgetAgentPowerShellArguments $agent
+  $children=@(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'"|Where-Object{$_.ProcessId-ne $PID -and $_.CommandLine -and ($_.CommandLine.IndexOf($expected,[StringComparison]::OrdinalIgnoreCase)-ge 0-or $_.CommandLine.IndexOf($encoded,[StringComparison]::Ordinal)-ge 0)})
   foreach($child in $children){
     $current=Get-CimInstance Win32_Process -Filter ('ProcessId='+$child.ProcessId)
     if($current -and $current.CreationDate-eq $child.CreationDate){Stop-Process -Id $child.ProcessId -Force -ErrorAction SilentlyContinue}
@@ -154,5 +172,5 @@ try {
   Start-Sleep -Milliseconds 300
   $resolved=[IO.Path]::GetFullPath($testRoot);$prefix=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')+'\'
   if(!$resolved.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) -or (Split-Path $resolved -Leaf)-notlike 'gpt-niang-update-live-*'){throw 'Unsafe integration cleanup path.'}
-  Remove-Item -LiteralPath $resolved -Recurse -Force
+  if(!$KeepFixture){Remove-Item -LiteralPath $resolved -Recurse -Force}
 }

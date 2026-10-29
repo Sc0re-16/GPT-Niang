@@ -1,15 +1,37 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import {spawn} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {atomicJson} from './usage.mjs';
 import {healthyWorker,readJson,processAlive} from './worker-state.mjs';
 import {requestPipeRefresh} from './worker-ipc.mjs';
 
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+let staleUpdateMarker=null;
 export function widgetUpdating(dataDir) {
   const update=readJson(path.join(dataDir,'update-installing.json'));
-  return !!(update?.pid && processAlive(update.pid));
+  if(!processAlive(update?.pid))return false;
+  // Windows installer markers record process creation time. A live recycled PID
+  // is not the installer; never unlink here, since a new update may replace it.
+  if(process.platform==='win32' && update.startedAt){
+    const expected=Date.parse(update.startedAt);
+    if(!Number.isFinite(expected))return false;
+    const key=JSON.stringify([path.resolve(dataDir),update.pid,update.startedAt,update.token]);
+    if(staleUpdateMarker===key)return false;
+    const shell=path.join(process.env.WINDIR || 'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
+    const command=`try{$p=[Diagnostics.Process]::GetProcessById(${update.pid});try{$p.StartTime.ToUniversalTime().ToString('o')}finally{$p.Dispose()}}catch{exit 1}`;
+    const result=spawnSync(shell,['-NoLogo','-NoProfile','-NonInteractive','-Command',command],{windowsHide:true,encoding:'utf8',timeout:2000,maxBuffer:4096});
+    const actual=Date.parse(result.stdout?.trim());
+    if(result.status===0 && Number.isFinite(actual)){
+      // A recycled PID can never regain its earlier creation time. Remember
+      // one proven stale marker so normal one-second polls do no extra work.
+      if(actual>expected)staleUpdateMarker=key;
+      return actual===expected;
+    }
+    // An observation failure cannot authorize a worker during a live update.
+    return processAlive(update.pid);
+  }
+  return true;
 }
 export const updatingSnapshot=()=>({ok:false,queryOk:false,retryable:true,errorCode:'UPDATING',error:'挂件正在更新，请稍后重试',windows:[],clearPrevious:true});
 

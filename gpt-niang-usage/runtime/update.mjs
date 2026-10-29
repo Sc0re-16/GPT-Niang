@@ -266,7 +266,7 @@ export function runUpdate(config,options={}) {
   if(jobs.has(key))return jobs.get(key);
   const job=performUpdate(config,options).finally(()=>jobs.delete(key));jobs.set(key,job);return job;
 }
-async function performUpdate(config,{mode='manual',agentDir=path.join(process.env.LOCALAPPDATA??'','GPTNiangUsage','update-agent'),fetchBytes=download,cleanup=token=>new Promise((resolve,reject)=>{
+async function performUpdate(config,{mode='manual',agentDir=config.updateAgent??path.join(process.env.LOCALAPPDATA??'','GPTNiangUsage','update-agent'),fetchBytes=download,cleanup=token=>new Promise((resolve,reject)=>{
   const child=spawn(path.join(process.env.WINDIR,'System32','WindowsPowerShell','v1.0','powershell.exe'),['-NoProfile','-ExecutionPolicy','Bypass','-File',path.join(agentDir,'update-helper.ps1'),'-Cleanup','-Token',token],{windowsHide:true,stdio:'ignore'});
   child.once('error',reject);child.once('exit',code=>code===0?resolve():reject(new Error('更新文件清理未完成，请关闭占用旧文件的程序后重试。')));
 }),waitIdle=async()=>{
@@ -341,7 +341,7 @@ if(process.argv[1] && path.resolve(process.argv[1])===fileURLToPath(import.meta.
   }
   const config=read(process.argv[2]);
   if(!config?.appDir || !config.dataDir || !versionParts(config.version) || path.resolve(config.appDir)!==path.dirname(path.resolve(process.argv[2])))throw new Error('Invalid updater configuration');
-  const agentDir=path.join(process.env.LOCALAPPDATA,'GPTNiangUsage','update-agent'),binding=read(path.join(agentDir,'binding.json'));
+  const agentDir=config.updateAgent??path.join(process.env.LOCALAPPDATA,'GPTNiangUsage','update-agent'),binding=read(path.join(agentDir,'binding.json'));
   if(!binding || path.resolve(binding.appDir)!==path.resolve(config.appDir) || path.resolve(binding.dataDir)!==path.resolve(config.dataDir))throw new Error('Updater installation binding mismatch');
   await runUpdate(config,{mode:['automatic','automatic-enabled','cleanup'].includes(process.argv[3])?process.argv[3]:'manual'});
 }

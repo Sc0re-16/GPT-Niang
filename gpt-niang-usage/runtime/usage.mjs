@@ -117,9 +117,9 @@ export function resolveCodexExecutable(configuredPath,{env=process.env,platform=
 }
 
 // Only three read-only protocol methods are sent. There is no thread or model call.
-export function readUsage(cli, {timeoutMs=18000,spawnProcess=spawn,onAccount=()=>{}}={}) {
+export function readUsage(cli, {timeoutMs=18000,fallbackTimeoutMs=10000,spawnProcess=spawn,onAccount=()=>{}}={}) {
   return new Promise(resolve=>{
-    let finished=false,proc,lines,accountKey=null,account=null,planInfo=identifyPlan(null,null),expectedId=1;
+    let finished=false,proc,lines,accountKey=null,account=null,planInfo=identifyPlan(null,null),expectedId=1,directFallback=false;
     const failure=(error,errorCode)=>({ok:false,queryOk:false,error,windows:[],...planInfo,accountKey,clearPrevious:!accountKey,...(errorCode?{errorCode}:{})});
     const stopChild=()=>{try{proc?.stdin.end();proc?.kill();}catch{}};
     const finish=data=>{
@@ -129,7 +129,7 @@ export function readUsage(cli, {timeoutMs=18000,spawnProcess=spawn,onAccount=()=
       stopChild();
       resolve(data);
     };
-    const timer=setTimeout(()=>finish(failure('查询超时，稍后重试')),timeoutMs);
+    let timer=setTimeout(()=>finish(failure('查询超时，稍后重试')),timeoutMs);
     try{proc=spawnProcess(cli,['app-server','--stdio'],{windowsHide:true,stdio:['pipe','pipe','pipe']});}
     catch{finish(failure('Codex 额度服务暂不可用'));return;}
     process.once('exit',stopChild);
@@ -153,7 +153,17 @@ export function readUsage(cli, {timeoutMs=18000,spawnProcess=spawn,onAccount=()=
         expectedId=2;
         send({id:2,method:'account/read',params:{refreshToken:false}});
       } else if(m.id===2){
-        if(m.error)return finish(failure('暂时无法读取登录状态'));
+        if(m.error){
+          const message=typeof m.error.message==='string'?m.error.message.trim().toLowerCase():'';
+          if(m.error.code!==-32603 || message!=='workspace routing discovery timed out')return finish(failure('暂时无法读取登录状态'));
+          // The official quota response can still be available during routing
+          // discovery failures. Clear the old identity before attempting it.
+          try{onAccount(null);}catch{return finish(failure('无法保存账户切换状态'));}
+          directFallback=true;expectedId=3;
+          clearTimeout(timer);timer=setTimeout(()=>finish(failure('查询超时，稍后重试')),fallbackTimeoutMs);
+          send({id:3,method:'account/rateLimits/read',params:{}});
+          return;
+        }
         const type=m.result?.account?.type;
         account=m.result?.account;
         planInfo=identifyPlan(account?.planType,null,type??null);
@@ -165,6 +175,17 @@ export function readUsage(cli, {timeoutMs=18000,spawnProcess=spawn,onAccount=()=
         send({id:3,method:'account/rateLimits/read',params:{}});
       } else if(m.id===3){
         if(m.error)return finish(failure('暂时无法读取额度，请检查登录状态或稍后重试','RATE_LIMITS_READ_FAILED'));
+        if(directFallback){
+          // accountId comes from the official quota response, not from local
+          // credentials. It must be present, but is never stored or exposed.
+          const id=m.result?.accountId;
+          if(typeof id!=='string' || !id.trim() || id.length>1024 || /[\x00-\x1f\x7f]/.test(id))return finish(failure('暂时无法读取登录状态'));
+          const data=normalizeLimits(m.result);
+          // A workspace identifier is not a verified user identity. A fresh
+          // result may be displayed, but must not authorize stale reuse.
+          data.clearPrevious=true;data.accountKey=null;data.accountVerified=false;
+          return finish(data);
+        }
         const data=normalizeLimits(m.result);
         planInfo=identifyPlan(account?.planType,data.plan,account?.type);
         Object.assign(data,planInfo);
