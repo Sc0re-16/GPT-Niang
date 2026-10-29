@@ -47,3 +47,16 @@ public enum WindowFollowVisibility {
         !appHidden && !confirmedMissing && missingFor >= 0 && missingFor < 0.75
     }
 }
+
+// Poll quickly only during real motion; a static accessory should not keep a
+// 60 Hz run-loop timer alive in desktop mode or behind another application.
+public enum WidgetRefreshPolicy {
+    public static func windowInterval(follow: Bool, foreground: Bool, moving: Bool) -> TimeInterval {
+        guard follow else { return 1 }
+        guard foreground else { return 1 }
+        return moving ? 1.0 / 60 : 0.1
+    }
+    public static func animates(visible: Bool, bubble: Bool, fullColor: Bool, textColor: Bool) -> Bool {
+        visible && (fullColor || (bubble && textColor))
+    }
+}

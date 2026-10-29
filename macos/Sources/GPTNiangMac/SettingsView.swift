@@ -35,10 +35,10 @@ struct SettingsView: View {
         .onChange(of: model.alertPreferences) { _ in model.savePreferences(); model.alerts.configure() }
         .onChange(of: model.language) { _ in model.savePreferences() }
         .onChange(of: model.desktopTopmost) { _ in model.savePreferences() }
-        .onChange(of: model.soundOn) { _ in model.savePreferences() }
+        .onChange(of: model.soundOn) { _ in model.audio.updateVolume(); model.savePreferences() }
         .onChange(of: model.hideMenu) { _ in model.savePreferences() }
         .onChange(of: model.scale) { _ in model.savePreferences() }
-        .onChange(of: model.volume) { _ in model.savePreferences() }
+        .onChange(of: model.volume) { _ in model.audio.updateVolume(); model.savePreferences() }
         .onChange(of: model.colorMode) { _ in model.updateAppearance(); model.savePreferences() }
         .onChange(of: model.fullChance) { _ in model.updateAppearance(); model.savePreferences() }
         .onChange(of: model.textChance) { _ in model.updateAppearance(); model.savePreferences() }
@@ -84,6 +84,7 @@ struct SettingsView: View {
                         }
                     }
                     Toggle(model.text("提示音"), isOn: $model.soundOn)
+                    WidgetAudioMenu(audio: model.audio)
                     Toggle(model.text("隐藏设置按钮"), isOn: $model.hideMenu)
                     HStack { Text(model.text("角色大小")).frame(width: 70, alignment: .leading); Slider(value: $model.scale, in: 0.6...2.5, step: 0.1); Text("\(Int(model.scale * 100))% ").monospacedDigit().frame(width: 48) }
                     HStack { Text(model.text("提示音量")).frame(width: 70, alignment: .leading); Slider(value: $model.volume, in: 0...1); Text(model.volume == 0 ? model.text("靜音") : "\(Int(model.volume * 100))% ").frame(width: 48) }

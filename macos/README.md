@@ -1,6 +1,6 @@
 # GPT-Niang（GPT 娘）macOS
 
-Current release: **1.3.4**. Chinese installation and platform comparison: [project README](../README.md#macos-安装).
+Current release: **1.3.5**. This macOS package was built by CI. Platform differences in 1.3.5: Windows-only music rhythm, character gallery, auto quotes and independent character/bubble scaling; macOS-only chat-speed panel and interface language; WAV click-sound import and completion reminders are on both platforms. Chinese installation and platform comparison: [project README](../README.md#macos-安装).
 
 Code contributions, reviews, bug reproductions and feature suggestions are credited with their PR/Issue links in the [complete contributor acknowledgements](../README.md#致谢与许可).
 
@@ -21,16 +21,22 @@ window following, native pointer capture, and menu bar entry.
 
 If a CommandLineTools-only source build reports a missing SwiftUI macro plugin, `GPT_NIANG_SDK=/path/to/compatible/MacOSX.sdk ./script/build_and_run.sh --build-only` forwards the selected SDK to Swift. The default build and deployment target are unchanged. This build compatibility change is retained from [PR #8](https://github.com/T7moris/GPT-Niang/pull/8).
 
+## Platform differences (1.3.5)
+
+- Windows-only in this release: music rhythm, local character gallery, timed auto quotes, and independent character/bubble scaling.
+- macOS-only: chat-speed panel and interface-language selection.
+- Shared by both: WAV click-sound import (press/release) and completion reminders.
+- Not real-machine verified yet on this macOS build: multi-display, Stage Manager, fullscreen Spaces, audio import, and the update readiness/rollback path. The macOS updater additionally requires a fresh quota-worker heartbeat before committing an update, so validate on a non-critical machine first.
 ## Install the release
 
-Download `gpt-niang-usage-widget-v1.3.4-macos-universal.zip` from the [GitHub Release](https://github.com/T7moris/GPT-Niang/releases/latest), verify its entry in `SHA256SUMS.txt`, unzip, and move `GPTNiangMac.app` to Applications before opening. Node.js 20+ and a signed-in Codex desktop app are required; Swift/Xcode is needed only for source builds.
+Download `gpt-niang-usage-widget-v1.3.5-macos-universal.zip` from the [v1.3.5 GitHub Release](https://github.com/T7moris/GPT-Niang/releases/tag/v1.3.5), verify its entry in `SHA256SUMS.txt`, unzip, and move `GPTNiangMac.app` to Applications before opening. Node.js 20+ and a signed-in Codex desktop app are required; Swift/Xcode is needed only for source builds.
 
 The release is ad-hoc signed, not Developer ID signed or notarized. If macOS blocks the first launch, after checking the source and checksum follow [Apple’s instructions](https://support.apple.com/102445) in System Settings → Privacy & Security → Open Anyway.
 
 To calculate the downloaded ZIP’s checksum in Terminal, change to the download directory and run:
 
 ```sh
-shasum -a 256 gpt-niang-usage-widget-v1.3.4-macos-universal.zip
+shasum -a 256 gpt-niang-usage-widget-v1.3.5-macos-universal.zip
 ```
 
 Compare the result with the same filename in `SHA256SUMS.txt`; hexadecimal letter case does not matter.
@@ -70,20 +76,17 @@ refresh and supports `GPT_NIANG_CODEX_APP` for a nonstandard Codex app location.
 - Following mode hides the panel when Codex has no visible main window. Turn
   following off to keep it on the desktop. Window bounds come from public
   WindowServer metadata; no accessibility or screen-recording permission is
-  requested. The selected window's position is sampled at a target 60 Hz while
-  following; full window discovery runs four times per second and chooses the
-  foremost Codex window. Presence heartbeats are written once per second (and
-  immediately when visibility changes), and optional diagnostics four times per
-  second. Timing depends on main-thread and WindowServer availability; this is
-  polling, not a guarantee of zero-lag attachment. There is a 0.75-second grace
-  period only for failed WindowServer metadata reads; a successful snapshot
-  confirming no visible host (including minimization/closure) hides the pet
-  immediately. Losing the cached host triggers an immediate full lookup for
-  another visible Codex window before hiding; this differs from the
-  Windows version's native movement hooks. In following mode the panel uses floating level only while Codex is frontmost,
-  preventing host mouse-down/text-selection raises from briefly covering the pet.
-  It returns to normal level as soon as another app is frontmost so other apps
-  can cover it. Minimize/close handling is unchanged.
+  requested. Following uses adaptive polling: roughly 10 Hz while the host is
+  foreground and stationary, a target 60 Hz briefly during movement, and 1 Hz
+  while the host is in the background or desktop mode is selected. Workspace
+  activation/hide/Space notifications trigger immediate checks. Full discovery
+  is capped at four times per second and also respects the slower timer.
+  Presence heartbeats remain once per second. Invisible widget animation is
+  paused; hidden quota text is not laid out continuously. Visible colour flow
+  retains its animation. Window movement remains polling and needs real-world
+  drag/multiscreen validation. Stage Manager and Space geometry transitions
+  follow the upstream policy; minimize/no-host snapshots hide the main panel.
+  Following level is floating only while the host or companion is active.
 - Login launch is opt-in through macOS `SMAppService`. Enable it only after moving
   the app to its permanent location; macOS may request approval in Login Items.
 - **聊天速度** in the menu bar opens a separate thread performance panel.
@@ -358,3 +361,33 @@ shortest timed window below one day; weekly means exactly 10080 minutes.
 Delivery is usually within the worker's next 60-second refresh, not at an exact
 wall-clock deadline. A reset reports the current remaining percentage, which
 need not be 100% if usage has already resumed.
+
+### Upstream integration and power investigation (2026-10-29)
+
+Merged upstream b6f5eb8 with the local alert, quota reset, icon and lifecycle work.
+The upstream custom click WAV/worker recovery/window clipping changes are retained.
+The active macOS reminder pipeline is AlertCoordinator + CompletionPopupController;
+the upstream completion helper is retained for its Windows consumers, and the
+macOS CompletionNotificationController is not instantiated. The menu's completion
+choice aliases the same preference shown in alert settings; legacy upstream
+`taskCompletionBubble` is migrated only when no alert preferences exist.
+
+Observed old installed GUI CPU time averaged about 7% of one core over 15 seconds,
+with a separate process-list reading of 16.7%. The Node helpers were near idle.
+A five-second stack sample contained window polling and SwiftUI layout/drawing.
+After adaptive polling and animation gating, short background samples were about
+0.4–0.7%; these are CPU measurements, not watts or a battery-runtime guarantee.
+Foreground tests were interrupted by application switching and did not establish
+a stable foreground performance baseline. Visible full-colour animation still
+requires rendering. Full-screen/multimonitor, drag feel, real battery drain and
+ChatGPT question delivery retain explicit manual acceptance requirements.
+
+Full XCTest can now run with the locally installed Xcode without changing the
+global developer directory:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swift test --package-path macos --disable-sandbox
+```
+
+The separate command-line toolchain still cannot resolve XCTest. The standalone
+Swift scripts remain useful; window tests now use an isolated module cache.

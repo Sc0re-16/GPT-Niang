@@ -45,4 +45,17 @@ final class WindowFollowCadenceTests: XCTestCase {
         XCTAssertFalse(WindowFollowVisibility.keepDuringMissingHost(appHidden: false, confirmedMissing: false, missingFor: -1))
     }
 
+    func testIdleAndBackgroundAvoidFastPollingWhileMotionRemainsSmooth() {
+        XCTAssertEqual(WidgetRefreshPolicy.windowInterval(follow: false, foreground: true, moving: false), 1)
+        XCTAssertEqual(WidgetRefreshPolicy.windowInterval(follow: true, foreground: false, moving: false), 1)
+        XCTAssertEqual(WidgetRefreshPolicy.windowInterval(follow: true, foreground: true, moving: false), 0.1)
+        XCTAssertEqual(WidgetRefreshPolicy.windowInterval(follow: true, foreground: true, moving: true), 1.0 / 60)
+    }
+    func testInvisibleAnimationAndHiddenTextDoNotContinuouslyDraw() {
+        XCTAssertFalse(WidgetRefreshPolicy.animates(visible: false, bubble: true, fullColor: true, textColor: true))
+        XCTAssertFalse(WidgetRefreshPolicy.animates(visible: true, bubble: false, fullColor: false, textColor: true))
+        XCTAssertTrue(WidgetRefreshPolicy.animates(visible: true, bubble: false, fullColor: true, textColor: false))
+        XCTAssertTrue(WidgetRefreshPolicy.animates(visible: true, bubble: true, fullColor: false, textColor: true))
+    }
+
 }

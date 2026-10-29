@@ -10,7 +10,11 @@ printf 'import Foundation\nextension Bundle { static var module: Bundle { .main 
 swiftc "${TASK_ARGS[@]}" -emit-library -emit-module -module-name GPTNiangCore \
   "$TASK_ROOT"/macos/Sources/GPTNiangCore/*.swift "$TASK_TEMP/BundleResources.swift" \
   -emit-module-path "$TASK_TEMP/GPTNiangCore.swiftmodule" -o "$TASK_TEMP/libGPTNiangCore.dylib"
-swiftc "${TASK_ARGS[@]}" -I "$TASK_TEMP" -L "$TASK_TEMP" -lGPTNiangCore \
+swiftc "${TASK_ARGS[@]}" -emit-library -emit-module -module-name GPTNiangUpdate \
+  "$TASK_ROOT"/macos/Sources/GPTNiangUpdate/*.swift \
+  -emit-module-path "$TASK_TEMP/GPTNiangUpdate.swiftmodule" -o "$TASK_TEMP/libGPTNiangUpdate.dylib"
+swiftc "${TASK_ARGS[@]}" -I "$TASK_TEMP" -L "$TASK_TEMP" -lGPTNiangCore -lGPTNiangUpdate \
+  "$TASK_ROOT/macos/Sources/GPTNiangMac/AudioImport.swift" \
   "$TASK_ROOT/macos/Sources/GPTNiangMac/WidgetModel.swift" \
   "$TASK_ROOT/macos/Sources/GPTNiangMac/AlertCoordinator.swift" \
   "$TASK_ROOT/macos/Sources/GPTNiangMac/AlertNotifications.swift" \

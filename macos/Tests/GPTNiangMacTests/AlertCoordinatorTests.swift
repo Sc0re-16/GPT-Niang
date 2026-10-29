@@ -84,7 +84,7 @@ final class AlertCoordinatorTests: XCTestCase {
                 model.alertPreferences.completionPopupEnabled = popup
                 model.alertPreferences.soundEnabled = sound; model.alertPreferences.completionSoundEnabled = sound
                 var sounds = 0, presentations = 0
-                let coordinator = AlertCoordinator(model: model, notifications: FakeAlertNotifications(), playSound: { sounds += 1 })
+                let coordinator = AlertCoordinator(model: model, notifications: FakeAlertNotifications(), playSound: { _ in sounds += 1 })
                 coordinator.presentCompletionPopup = { count in presentations += count.values.reduce(0, +); return true }
                 let event = try JSONSerialization.data(withJSONObject: ["events": [["threadId": "test", "eventId": "one", "at": Date().timeIntervalSince1970 * 1000]]]) + Data([10])
                 coordinator.windowVisible = false; coordinator.hostFrontmost = false

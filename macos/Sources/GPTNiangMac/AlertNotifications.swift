@@ -8,8 +8,13 @@ protocol AlertNotifications {
 
 @MainActor
 final class SystemAlertNotifications: NSObject, AlertNotifications, UNUserNotificationCenterDelegate {
-    private let center = UNUserNotificationCenter.current()
-    override init() { super.init(); center.delegate = self }
+    // Creating a model or monitoring task events must not initialize system
+    // notifications. Access the OS service only when quota delivery needs it.
+    private lazy var center: UNUserNotificationCenter = {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        return center
+    }()
     func authorize(request: Bool, completion: @escaping @MainActor (Bool) -> Void) {
         Task { @MainActor in
             let settings = await center.notificationSettings()
